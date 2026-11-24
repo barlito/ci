@@ -111,7 +111,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       RUN_ID: ${{ github.run_id }}
-      SHA: ${{ github.sha }}
+      SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Assert served versions, traces and the Deployment
         run: |
