@@ -1,0 +1,32 @@
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: make actionlint
+      - name: shellcheck
+        run: make shellcheck
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make zizmor
+      - name: Third-party actions pinned by SHA
+        run: make pinning

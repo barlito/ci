@@ -1,0 +1,46 @@
+name: promote
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Move the major tag to this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag '$TAG' is not a vX.Y.Z version"
+            exit 1
+          fi
+          major="v${BASH_REMATCH[1]}"
+
+          latest=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/$major." --jq '.[].ref' \
+            | sed 's|^refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
+          if [ "$latest" != "$TAG" ]; then
+            echo "::notice::$TAG is not the latest $major release ($latest), $major left unchanged"
+            exit 0
+          fi
+
+          sha=$(gh api "repos/$REPO/commits/$TAG" --jq .sha)
+          if gh api "repos/$REPO/git/ref/tags/$major" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$REPO/git/refs/tags/$major" -f sha="$sha" -F force=true >/dev/null
+          else
+            gh api "repos/$REPO/git/refs" -f ref="refs/tags/$major" -f sha="$sha" >/dev/null
+          fi
+          echo "::notice::$major -> $TAG ($sha)"

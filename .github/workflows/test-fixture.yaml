@@ -1,0 +1,83 @@
+name: test-fixture
+
+on:
+  pull_request:
+    paths:
+      - tests/fixtures/app/**
+      - .github/workflows/test-fixture.yaml
+  push:
+    branches: [main]
+    paths:
+      - tests/fixtures/app/**
+      - .github/workflows/test-fixture.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-fixture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swarm-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      REGISTRY: localhost:5000
+      TRACE_FILE: ${{ github.workspace }}/trace.log
+    defaults:
+      run:
+        working-directory: tests/fixtures/app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start a local registry and a single-node swarm
+        run: |
+          docker run -d -p 5000:5000 --name registry registry:3@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+          docker swarm init
+
+      - name: Build and push two versions
+        run: |
+          for version in v1.0.0 v1.1.0; do
+            for target in app worker; do
+              docker build --target "$target" --build-arg APP_VERSION="$version" \
+                -t "$REGISTRY/fixture-$target:$version" .
+              docker push -q "$REGISTRY/fixture-$target:$version"
+            done
+          done
+
+      - name: Compose file is valid
+        env:
+          TAG: v1.0.0
+          CONFIG_VERSION: test
+        run: docker compose -f docker-compose-prod.yml config -q
+
+      - name: Full deploy
+        run: |
+          make deploy.prod TAG=v1.0.0
+          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors http://localhost:18080/health | grep -Fx 'ok v1.0.0'
+          curl -fsS http://localhost:18080/config | grep -Fx 'fixture-config v1'
+
+      - name: Rolling update
+        run: |
+          make deploy.update TAG=v1.1.0
+          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors http://localhost:18080/health | grep -Fx 'ok v1.1.0'
+
+      - name: Rollback
+        run: |
+          make rollback TAG=v1.0.0 RESTORE=1
+          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors http://localhost:18080/health | grep -Fx 'ok v1.0.0'
+
+      - name: Forced failure and trace
+        env:
+          FAIL_TARGETS: deploy.recover
+          FIXTURE_SECRET: dummy
+        run: |
+          if make deploy.recover; then echo "::error::forced failure did not fail"; exit 1; fi
+          cat "$TRACE_FILE"
+          grep -E '^deploy\.prod TAG=v1\.0\.0 ' "$TRACE_FILE"
+          grep -E '^deploy\.update TAG=v1\.1\.0 ' "$TRACE_FILE"
+          grep -E '^rollback TAG=v1\.0\.0 RESTORE=1 ' "$TRACE_FILE"
+          grep -E '^deploy\.recover .*FIXTURE_ENV=FIXTURE_SECRET$' "$TRACE_FILE"

@@ -1,0 +1,9 @@
+on: push
+jobs:
+  steps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aquasecurity/trivy-action@master
+      - uses: actions/setup-node@3d3c42e # short sha
+      - uses: docker://alpine:3.22
