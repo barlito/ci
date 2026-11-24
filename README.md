@@ -43,9 +43,9 @@ Prerequisites:
 | `deploy.recover` | no | `swarm-deploy` and `swarm-rollback` when make fails, times out or is cancelled | Restore a sane state (rescale workers...); skipped if missing |
 | `deploy.ci`, `docker.undeploy.ci` | PHP | `php-ci` | CI stack |
 
-Environment guaranteed to make (including `deploy.recover`): `DOCKER_HOST=ssh://...`, `TAG`, `RESTORE` (`swarm-rollback` only, possibly empty), and the secrets listed in the `env-secrets` input.
+Environment guaranteed to make (including `deploy.recover`): `DOCKER_HOST=ssh://...`, `TAG`, `RESTORE` (`swarm-rollback` only, possibly empty), the secrets listed in the `env-secrets` input (each must exist) and those listed in `optional-env-secrets` (exported empty when missing, so no sentinel value is needed for a not-yet-configured secret).
 
-Only secrets are exported to make, never variables: a value make needs (a host name for example) must be a secret listed in `env-secrets`. The allowlist is an export hygiene guarantee, not isolation: make runs in the same process tree as the job, which received every inherited secret.
+Only secrets are exported to make, never variables: a value make needs (a host name for example) must be a secret listed in `env-secrets` or `optional-env-secrets`. The allowlist is an export hygiene guarantee, not isolation: make runs in the same process tree as the job, which received every inherited secret.
 
 `deploy.update` does not reapply environment variables nor networks: use a `full` deploy when they change.
 
@@ -122,6 +122,7 @@ Validates the tag and the images, opens an SSH connection to the server and runs
 | `environment` | `production` | GitHub environment of the job |
 | `images` | | Space-separated image references without tag, each `<ref>:<TAG>` must exist |
 | `env-secrets` | | Space-separated secret names exported to make |
+| `optional-env-secrets` | | Space-separated secret names exported to make when they exist, exported empty otherwise (a `::notice::` names the missing ones) |
 | `castor` | `false` | Install castor before running make |
 | `submodules` | `true` | |
 | `working-directory` | `.` | Directory where make runs |
@@ -154,7 +155,7 @@ jobs:
     secrets: inherit
 ```
 
-The deploy job declares the `environment`, so GitHub records a Deployment (tag, commit, run, status) for each run. Only the secrets listed in `env-secrets` are exported to make.
+The deploy job declares the `environment`, so GitHub records a Deployment (tag, commit, run, status) for each run. Only the secrets listed in `env-secrets` and `optional-env-secrets` are exported to make.
 
 Stacks without a build (`traefik-base`...) use `swarm-deploy` with `images: ""`, `require-tag: false` and a dedicated `target`, plus `docker-check`.
 
@@ -162,7 +163,7 @@ Stacks without a build (`traefik-base`...) use `swarm-deploy` with `images: ""`,
 
 Runs `make rollback TAG=<tag> [RESTORE=<restore>]`, only from the default branch. It shares its concurrency group with `swarm-deploy`.
 
-Inputs: `tag` (required), `restore`, and the same `environment`, `images`, `env-secrets`, `castor`, `submodules`, `working-directory`, `target` and `timeout-minutes` as `swarm-deploy`.
+Inputs: `tag` (required), `restore`, and the same `environment`, `images`, `env-secrets`, `optional-env-secrets`, `castor`, `submodules`, `working-directory`, `target` and `timeout-minutes` as `swarm-deploy`.
 
 ```yaml
 name: rollback

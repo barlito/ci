@@ -23,6 +23,10 @@ on:
         description: Space-separated secret names exported to make, no other secret is exported
         type: string
         default: ""
+      optional-env-secrets:
+        description: Space-separated secret names exported to make when they exist, exported empty otherwise
+        type: string
+        default: ""
       castor:
         description: Install castor before running make
         type: boolean
@@ -84,6 +88,7 @@ jobs:
           RESTORE: ${{ inputs.restore }}
           IMAGES: ${{ inputs.images }}
           ENV_SECRETS: ${{ inputs.env-secrets }}
+          OPTIONAL_ENV_SECRETS: ${{ inputs.optional-env-secrets }}
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
           TARGET_OVERRIDE: ${{ inputs.target }}
           E2E: ${{ inputs.e2e-local-target }}
@@ -119,12 +124,18 @@ jobs:
           done
 
           read -r -d '' -a names <<<"$ENV_SECRETS" || true
-          for name in "${names[@]}"; do
+          read -r -d '' -a optional <<<"$OPTIONAL_ENV_SECRETS" || true
+          for name in "${names[@]}" "${optional[@]}"; do
             [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fail "Invalid secret name '$name'"
             case "$name" in
-              PATH|HOME|SHELL|IFS|BASH_ENV|ENV|TAG|TARGET|RESTORE|ENV_SECRETS|SECRETS_JSON|MAKE*|MFLAGS|DOCKER_HOST|DOCKER_CONFIG|DOCKER_CONTEXT|LD_*|GITHUB_*|RUNNER_*)
+              PATH|HOME|SHELL|IFS|BASH_ENV|ENV|TAG|TARGET|RESTORE|ENV_SECRETS|OPTIONAL_ENV_SECRETS|SECRETS_JSON|MAKE*|MFLAGS|DOCKER_HOST|DOCKER_CONFIG|DOCKER_CONTEXT|LD_*|GITHUB_*|RUNNER_*)
                 fail "Secret name '$name' is reserved" ;;
             esac
+          done
+          for name in "${optional[@]}"; do
+            [[ " ${names[*]} " != *" $name "* ]] || fail "Secret '$name' is listed in both env-secrets and optional-env-secrets"
+          done
+          for name in "${names[@]}"; do
             jq -e --arg n "$name" 'has($n)' <<<"$SECRETS_JSON" >/dev/null || fail "Secret '$name' listed in env-secrets does not exist"
           done
 
@@ -247,18 +258,26 @@ jobs:
         env:
           RESTORE: ${{ inputs.restore }}
           ENV_SECRETS: ${{ inputs.env-secrets }}
-          SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] values are read only for the names listed in env-secrets, then unset before make runs
+          OPTIONAL_ENV_SECRETS: ${{ inputs.optional-env-secrets }}
+          SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] values are read only for the names listed in env-secrets and optional-env-secrets, then unset before make runs
         run: |
           set -euo pipefail
           read -r -d '' -a names <<<"$ENV_SECRETS" || true
-          for name in "${names[@]}"; do
-            value=$(jq -er --arg n "$name" '.[$n] | select(type == "string")' <<<"$SECRETS_JSON")
+          read -r -d '' -a optional <<<"$OPTIONAL_ENV_SECRETS" || true
+          missing=()
+          for name in "${names[@]}" "${optional[@]}"; do
+            if ! value=$(jq -er --arg n "$name" '.[$n] | select(type == "string")' <<<"$SECRETS_JSON"); then
+              [[ " ${optional[*]} " == *" $name "* ]] || exit 1
+              missing+=("$name")
+              value=
+            fi
             while IFS= read -r line; do
               [ -z "$line" ] || echo "::add-mask::$line"
             done <<<"$value"
             export "$name=$value"
           done
-          unset SECRETS_JSON ENV_SECRETS value
+          [ "${#missing[@]}" -eq 0 ] || echo "::notice::Optional secrets not set, exported empty: ${missing[*]}"
+          unset SECRETS_JSON ENV_SECRETS OPTIONAL_ENV_SECRETS value
 
           make "$TARGET" TAG="$TAG" ${RESTORE:+RESTORE="$RESTORE"}
 
@@ -269,18 +288,26 @@ jobs:
         env:
           RESTORE: ${{ inputs.restore }}
           ENV_SECRETS: ${{ inputs.env-secrets }}
-          SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] values are read only for the names listed in env-secrets, then unset before make runs
+          OPTIONAL_ENV_SECRETS: ${{ inputs.optional-env-secrets }}
+          SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] values are read only for the names listed in env-secrets and optional-env-secrets, then unset before make runs
         run: |
           set -euo pipefail
           read -r -d '' -a names <<<"$ENV_SECRETS" || true
-          for name in "${names[@]}"; do
-            value=$(jq -er --arg n "$name" '.[$n] | select(type == "string")' <<<"$SECRETS_JSON")
+          read -r -d '' -a optional <<<"$OPTIONAL_ENV_SECRETS" || true
+          missing=()
+          for name in "${names[@]}" "${optional[@]}"; do
+            if ! value=$(jq -er --arg n "$name" '.[$n] | select(type == "string")' <<<"$SECRETS_JSON"); then
+              [[ " ${optional[*]} " == *" $name "* ]] || exit 1
+              missing+=("$name")
+              value=
+            fi
             while IFS= read -r line; do
               [ -z "$line" ] || echo "::add-mask::$line"
             done <<<"$value"
             export "$name=$value"
           done
-          unset SECRETS_JSON ENV_SECRETS value
+          [ "${#missing[@]}" -eq 0 ] || echo "::notice::Optional secrets not set, exported empty: ${missing[*]}"
+          unset SECRETS_JSON ENV_SECRETS OPTIONAL_ENV_SECRETS value
 
           echo "::error::make $TARGET failed or was interrupted (timeout or cancellation)"
           database=$(make -pRrq : 2>/dev/null || true)

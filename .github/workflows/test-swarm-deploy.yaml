@@ -71,6 +71,7 @@ jobs:
       env-secrets: |
         DOCKER_HUB_USERNAME
         SERVER_USERNAME
+      optional-env-secrets: DOCKER_HUB_READ_ONLY_ACCESS_TOKEN E2E_OPT_MISSING
       castor: true
       working-directory: tests/fixtures/swarm-deploy
       e2e-local-target: true
@@ -137,7 +138,8 @@ jobs:
 
           out=$(log deploy-update)
           expect "$out" "deploy\.update TAG=v1\.1\.0 RESTORE= $host "
-          expect "$out" 'deploy\.update exported=DOCKER_HUB_USERNAME,SERVER_USERNAME castor=yes'
+          expect "$out" 'deploy\.update exported=DOCKER_HUB_READ_ONLY_ACCESS_TOKEN,DOCKER_HUB_USERNAME,SERVER_USERNAME castor=yes optional=DOCKER_HUB_READ_ONLY_ACCESS_TOKEN:19,E2E_OPT_MISSING:0'
+          expect "$out" 'Optional secrets not set, exported empty: E2E_OPT_MISSING'
           expect "$out" 'Found localhost:5000/fixture-worker:v1\.1\.0'
           expect "$out" 'E2E-SERVED ok v1\.1\.0'
 
@@ -183,6 +185,8 @@ jobs:
             'rollback-not-default-branch::Rollback must run on the default branch' \
             "reserved-secret-name::Secret name 'MAKEFLAGS' is reserved" \
             "lowercase-secret-name::Invalid secret name 'github_token'" \
+            "duplicate-optional-secret::Secret 'DOCKER_HUB_USERNAME' is listed in both env-secrets and optional-env-secrets" \
+            "invalid-optional-secret-name::Invalid secret name 'lower_case'" \
             'target-failure-no-recover::make e2e.fail failed' \
             'target-failure-no-recover::deploy.recover is not defined, skipping recovery' \
             'target-failure::make e2e.fail failed' \
