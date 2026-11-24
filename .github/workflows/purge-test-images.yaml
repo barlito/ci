@@ -3,6 +3,8 @@ name: purge-test-images
 on:
   schedule:
     - cron: '17 4 * * 1'
+  pull_request:
+    paths: [.github/workflows/purge-test-images.yaml]
   workflow_dispatch:
     inputs:
       max-age-days:
