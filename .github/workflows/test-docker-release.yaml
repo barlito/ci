@@ -25,7 +25,7 @@ jobs:
       registry: ghcr.io
       e2e-tag: v0.0.${{ github.run_id }}
     secrets:
-      registry-username: ${{ github.actor }}
+      registry-username: github-actions
       registry-token: ${{ secrets.GITHUB_TOKEN }}
 
   release-prerelease:
@@ -40,7 +40,7 @@ jobs:
       registry: ghcr.io
       e2e-tag: v0.0.0-e2e.${{ github.run_id }}
     secrets:
-      registry-username: ${{ github.actor }}
+      registry-username: github-actions
       registry-token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-release:
@@ -133,20 +133,12 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
-          workflow_id=
-          for _ in $(seq 1 20); do
-            workflow_id=$(gh api "repos/$GH_REPO/actions/workflows" --paginate \
-              --jq ".workflows[] | select(.path == \".github/workflows/$WORKFLOW\") | .id")
-            [ -n "$workflow_id" ] && break
-            sleep 6
-          done
-          [ -n "$workflow_id" ] || fail "workflow $WORKFLOW is not registered"
           start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          gh workflow run "$workflow_id" --ref "$HEAD_REF"
+          gh workflow run "$WORKFLOW" --ref "$HEAD_REF"
 
           run_id=
           for _ in $(seq 1 20); do
-            run_id=$(gh run list --workflow "$workflow_id" --event workflow_dispatch --branch "$HEAD_REF" \
+            run_id=$(gh run list --workflow "$WORKFLOW" --event workflow_dispatch --branch "$HEAD_REF" \
               --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$start\")] | first | .databaseId // empty")
             [ -n "$run_id" ] && break
             sleep 6
