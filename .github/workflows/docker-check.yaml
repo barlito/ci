@@ -1,0 +1,65 @@
+name: docker-check
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: Path of the Dockerfile, relative to the repository root
+        type: string
+        default: Dockerfile
+      targets:
+        description: Space-separated build targets (empty skips the build)
+        type: string
+        default: ""
+      context:
+        description: Build context
+        type: string
+        default: .
+      compose-files:
+        description: Space-separated compose files to validate
+        type: string
+        default: docker-compose-prod.yml
+      compose-env:
+        description: Multiline KEY=VALUE dummy values used to interpolate the compose files
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      TARGETS: ${{ inputs.targets }}
+      CONTEXT: ${{ inputs.context }}
+      COMPOSE_FILES: ${{ inputs.compose-files }}
+      COMPOSE_ENV: ${{ inputs.compose-env }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build targets
+        run: |
+          for target in $TARGETS; do
+            docker buildx build --file "$DOCKERFILE" --target "$target" --output type=cacheonly "$CONTEXT"
+          done
+
+      - name: Validate compose files
+        run: |
+          while IFS= read -r line; do
+            line=${line%$'\r'}
+            case "$line" in ''|'#'*) continue ;; esac
+            if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "::error::Invalid compose-env line: $line"
+              exit 1
+            fi
+            export "${line?}"
+          done <<< "$COMPOSE_ENV"
+          for file in $COMPOSE_FILES; do
+            docker compose -f "$file" config -q
+          done

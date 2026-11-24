@@ -5,8 +5,27 @@ on: workflow_dispatch
 permissions: {}
 
 jobs:
-  placeholder:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: echo "Registers the workflow on the default branch; cases live on the dispatched branch."
+  broken-compose:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/docker-check.yaml # zizmor: ignore[self-repository]
+    with:
+      compose-files: tests/fixtures/docker-check/broken-compose/docker-compose-prod.yml
+
+  broken-dockerfile:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/docker-check.yaml # zizmor: ignore[self-repository]
+    with:
+      dockerfile: tests/fixtures/docker-check/broken-dockerfile/Dockerfile
+      context: tests/fixtures/docker-check/broken-dockerfile
+      targets: app
+      compose-files: tests/fixtures/docker-check/no-build-compose.yml
+
+  missing-env:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/docker-check.yaml # zizmor: ignore[self-repository]
+    with:
+      compose-files: tests/fixtures/app/docker-compose-prod.yml
+      compose-env: TAG=v0.0.0
