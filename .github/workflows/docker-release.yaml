@@ -52,7 +52,7 @@ on:
         description: Released tag, e.g. v1.2.3
         value: ${{ jobs.release.outputs.tag }}
       digests:
-        description: JSON object mapping image name to digest
+        description: JSON object mapping each image target to its digest
         value: ${{ jobs.release.outputs.digests }}
 
 permissions: {}
@@ -79,6 +79,7 @@ jobs:
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           IMAGES: ${{ inputs.images }}
           CACHE: ${{ inputs.cache }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -n "$E2E_TAG" ]; then
@@ -102,12 +103,23 @@ jobs:
             echo '::error::Input images must be a non-empty JSON array of {"name","target"}'
             exit 1
           fi
-          prerelease=false
-          if [[ "$tag" == *-* ]] || [ "$RELEASE_PRERELEASE" = true ]; then
-            prerelease=true
+          if ! jq -e '([.[].target] | unique | length) == length' <<<"$IMAGES" >/dev/null; then
+            echo '::error::Input images must have unique targets, the digests output is keyed by target'
+            exit 1
+          fi
+          latest=false
+          if [[ "$tag" != *-* ]] && [ "$RELEASE_PRERELEASE" != true ]; then
+            stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
+            repo_tags=$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
+            highest=$(printf '%s\n%s\n' "$repo_tags" "$tag" | grep -E "$stable" | sort -V | tail -n 1)
+            if [ "$highest" = "$tag" ]; then
+              latest=true
+            else
+              echo "::notice::Tag $tag is not the highest stable tag ($highest), latest is not moved"
+            fi
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -151,7 +163,7 @@ jobs:
           SBOM: ${{ inputs.sbom }}
           PROVENANCE: ${{ inputs.provenance }}
           TAG: ${{ steps.guard.outputs.tag }}
-          PRERELEASE: ${{ steps.guard.outputs.prerelease }}
+          LATEST: ${{ steps.guard.outputs.latest }}
         run: |
           set -euo pipefail
           cache_ref="ghcr.io/${GITHUB_REPOSITORY,,}:buildcache"
@@ -173,7 +185,7 @@ jobs:
             esac
             ref="$REGISTRY/$name"
             tags=(--tag "$ref:$TAG")
-            if [ "$PRERELEASE" != true ]; then tags+=(--tag "$ref:latest"); fi
+            if [ "$LATEST" = true ]; then tags+=(--tag "$ref:latest"); fi
 
             cache_flags=()
             case "$CACHE" in
@@ -185,12 +197,12 @@ jobs:
                 if [ "$index" -eq 0 ]; then cache_flags+=(--cache-to "type=gha,mode=max"); fi ;;
             esac
 
-            echo "build-image[$name]"
+            echo "build-image[$target]"
             metadata="$RUNNER_TEMP/metadata-$index.json"
             docker buildx build --progress plain --push --target "$target" "${common[@]}" "${tags[@]}" "${cache_flags[@]}" \
               --metadata-file "$metadata" "$CONTEXT"
-            digest=$(jq -r '."containerimage.digest"' "$metadata")
-            digests=$(jq -c --arg name "$name" --arg digest "$digest" '. + {($name): $digest}' <<<"$digests")
+            digest=$(jq -er '."containerimage.digest"' "$metadata")
+            digests=$(jq -c --arg name "$target" --arg digest "$digest" '. + {($name): $digest}' <<<"$digests")
             index=$((index + 1))
           done < <(jq -r '.[] | [.name, .target] | @tsv' <<<"$IMAGES")
 

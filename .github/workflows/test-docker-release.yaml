@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/docker-release.yaml
+      - tests/fixtures/app/**
       - .github/workflows/test-docker-release.yaml
       - .github/workflows/test-docker-release-failures.yaml
 
@@ -24,7 +25,7 @@ jobs:
       images: '[{"name":"barlito/ci-test-app","target":"app"},{"name":"barlito/ci-test-worker","target":"worker"}]'
       context: tests/fixtures/app
       registry: ghcr.io
-      e2e-tag: v0.0.${{ github.run_id }}
+      e2e-tag: v999999.0.${{ github.run_id }}
     secrets:
       registry-username: github-actions
       registry-token: ${{ secrets.GITHUB_TOKEN }}
@@ -39,13 +40,29 @@ jobs:
       images: '[{"name":"barlito/ci-test-app","target":"app"},{"name":"barlito/ci-test-worker","target":"worker"}]'
       context: tests/fixtures/app
       registry: ghcr.io
-      e2e-tag: v0.0.0-e2e.${{ github.run_id }}
+      e2e-tag: v999999.0.0-e2e.${{ github.run_id }}
     secrets:
       registry-username: github-actions
       registry-token: ${{ secrets.GITHUB_TOKEN }}
 
+  release-older:
+    needs: release-prerelease
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-release.yaml  # zizmor: ignore[self-repository]
+    with:
+      images: '[{"name":"barlito/ci-test-app","target":"app"}]'
+      context: tests/fixtures/app
+      registry: ghcr.io
+      e2e-tag: v999998.0.${{ github.run_id }}
+    secrets:
+      registry-username: barlito
+      registry-token: ${{ secrets.GITHUB_TOKEN }}
+
   assert-release:
-    needs: [release-stable, release-prerelease]
+    needs: [release-stable, release-prerelease, release-older]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -59,8 +76,11 @@ jobs:
       STABLE_DIGESTS: ${{ needs.release-stable.outputs.digests }}
       PRE_TAG: ${{ needs.release-prerelease.outputs.tag }}
       PRE_DIGESTS: ${{ needs.release-prerelease.outputs.digests }}
-      EXPECTED_STABLE_TAG: v0.0.${{ github.run_id }}
-      EXPECTED_PRE_TAG: v0.0.0-e2e.${{ github.run_id }}
+      OLDER_TAG: ${{ needs.release-older.outputs.tag }}
+      OLDER_DIGESTS: ${{ needs.release-older.outputs.digests }}
+      EXPECTED_STABLE_TAG: v999999.0.${{ github.run_id }}
+      EXPECTED_PRE_TAG: v999999.0.0-e2e.${{ github.run_id }}
+      EXPECTED_OLDER_TAG: v999998.0.${{ github.run_id }}
       EXPECTED_SHA: ${{ github.sha }}
       CACHE_REF: ghcr.io/barlito/ci:buildcache
     steps:
@@ -79,9 +99,9 @@ jobs:
 
           digest_of() { timeout 60 docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1"; }
           check_image() {
-            local name="$1" stable_digest pre_digest ref="ghcr.io/$1"
-            stable_digest=$(jq -er --arg n "$name" '.[$n]' <<<"$STABLE_DIGESTS")
-            pre_digest=$(jq -er --arg n "$name" '.[$n]' <<<"$PRE_DIGESTS")
+            local name="$1" target="$2" stable_digest pre_digest ref="ghcr.io/$1"
+            stable_digest=$(jq -er --arg n "$target" '.[$n]' <<<"$STABLE_DIGESTS")
+            pre_digest=$(jq -er --arg n "$target" '.[$n]' <<<"$PRE_DIGESTS")
             [ "$(digest_of "$ref:$STABLE_TAG")" = "$stable_digest" ] || fail "$name: stable digest mismatch"
             [ "$(digest_of "$ref:$PRE_TAG")" = "$pre_digest" ] || fail "$name: prerelease digest mismatch"
             [ "$(digest_of "$ref:latest")" = "$stable_digest" ] || fail "$name: latest must point to the stable release"
@@ -95,8 +115,14 @@ jobs:
               [ "$(jq -r '."org.opencontainers.image.source"' <<<"$labels")" = "https://github.com/$GH_REPO" ] || fail "$name:$tag: bad source label"
             done
           }
-          check_image barlito/ci-test-app
-          check_image barlito/ci-test-worker
+          check_image barlito/ci-test-app app
+          check_image barlito/ci-test-worker worker
+
+          # The username secret equals the image namespace: the output must survive masking.
+          [ "$OLDER_TAG" = "$EXPECTED_OLDER_TAG" ] || fail "older tag output is $OLDER_TAG"
+          older_digest=$(jq -er '.app' <<<"$OLDER_DIGESTS")
+          [ "$(digest_of "ghcr.io/barlito/ci-test-app:$OLDER_TAG")" = "$older_digest" ] || fail "older digest mismatch"
+          [ "$(digest_of ghcr.io/barlito/ci-test-app:latest)" = "$(jq -er '.app' <<<"$STABLE_DIGESTS")" ] || fail "latest moved backwards"
 
           [ "$(docker run --rm --entrypoint cat "ghcr.io/barlito/ci-test-app:$STABLE_TAG" /www/health)" = "ok $STABLE_TAG" ] || fail "APP_VERSION not baked in"
           [ "$(docker run --rm --entrypoint cat "ghcr.io/barlito/ci-test-app:$PRE_TAG" /www/health)" = "ok $PRE_TAG" ] || fail "APP_VERSION not baked in the prerelease"
@@ -110,7 +136,7 @@ jobs:
               --jq ".jobs[] | select(.name | startswith(\"$prefix\")) | .id")
             timeout 60 gh api --allow-escape-sequences "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/$prefix.log"
             for image in app worker; do
-              awk -v m="build-image[barlito/ci-test-$image]" '/build-image\[/ { cur = index($0, m) > 0 } cur' \
+              awk -v m="build-image[$image]" '/build-image\[/ { cur = index($0, m) > 0 } cur' \
                 "$RUNNER_TEMP/$prefix.log" > "$RUNNER_TEMP/$prefix-$image.log"
               grep -Fq "importing cache manifest from $CACHE_REF" "$RUNNER_TEMP/$prefix-$image.log" \
                 || fail "$prefix: $image build did not import the cache"
@@ -118,6 +144,11 @@ jobs:
             grep -Fq 'exporting cache to registry' "$RUNNER_TEMP/$prefix-app.log" || fail "$prefix: first image did not export the cache"
             ! grep -Fq 'exporting cache to registry' "$RUNNER_TEMP/$prefix-worker.log" || fail "$prefix: second image exported the cache"
           done
+
+          job_id=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.name | startswith("release-older")) | .id')
+          timeout 60 gh api --allow-escape-sequences "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/older.log"
+          grep -Fq 'is not the highest stable tag' "$RUNNER_TEMP/older.log" || fail "older tag: latest skip notice missing"
 
   assert-failures:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
@@ -135,13 +166,16 @@ jobs:
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
-          start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          list_runs() {
+            gh run list --workflow "$WORKFLOW" --event workflow_dispatch --branch "$HEAD_REF" --limit 50 --json databaseId --jq '.[].databaseId'
+          }
+          before=$(list_runs)
           gh workflow run "$WORKFLOW" --ref "$HEAD_REF"
 
           run_id=
-          for _ in $(seq 1 20); do
-            run_id=$(gh run list --workflow "$WORKFLOW" --event workflow_dispatch --branch "$HEAD_REF" \
-              --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$start\")] | first | .databaseId // empty")
+          for _ in $(seq 1 30); do
+            current=$(list_runs || true)
+            run_id=$(comm -13 <(sort <<<"$before") <(sort <<<"$current") | head -n 1)
             [ -n "$run_id" ] && break
             sleep 6
           done
