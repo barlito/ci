@@ -11,7 +11,7 @@ on:
         type: string
         default: .
       dockerfile:
-        description: Path relative to the context
+        description: Path relative to the repository root
         type: string
         default: Dockerfile
       namespace:
@@ -47,9 +47,9 @@ on:
         type: string
         default: ''
     secrets:
-      registry-username:
+      DOCKER_HUB_USERNAME:
         required: false
-      registry-token:
+      DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN:
         required: false
     outputs:
       tag:
@@ -65,11 +65,14 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      group: docker-release-${{ github.repository }}${{ inputs.e2e-tag && format('-{0}', inputs.e2e-tag) || '' }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
     env:
-      REGISTRY_LOGIN: ${{ secrets.registry-username != '' || secrets.registry-token != '' }}
+      REGISTRY_LOGIN: ${{ secrets.DOCKER_HUB_USERNAME != '' || secrets.DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN != '' }}
     outputs:
       tag: ${{ steps.guard.outputs.tag }}
       digests: ${{ steps.build.outputs.digests }}
@@ -151,8 +154,8 @@ jobs:
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ inputs.registry }}
-          username: ${{ secrets.registry-username }}
-          password: ${{ secrets.registry-token }}
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN }}
 
       - name: Build and push
         id: build
@@ -172,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           cache_ref="ghcr.io/${GITHUB_REPOSITORY,,}:buildcache"
-          common=(--platform "$PLATFORMS" --file "$CONTEXT/$DOCKERFILE" --sbom="$SBOM" --provenance="$PROVENANCE"
+          common=(--platform "$PLATFORMS" --file "$DOCKERFILE" --sbom="$SBOM" --provenance="$PROVENANCE"
             --label "org.opencontainers.image.version=$TAG"
             --label "org.opencontainers.image.revision=$GITHUB_SHA"
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY")

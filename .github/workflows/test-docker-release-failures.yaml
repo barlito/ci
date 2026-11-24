@@ -14,6 +14,7 @@ jobs:
     with:
       images: '[{"name":"barlito/ci-test-app","target":"app"}]'
       context: tests/fixtures/app
+      dockerfile: tests/fixtures/app/Dockerfile
       registry: ghcr.io
       e2e-tag: 1.2.3
 
@@ -25,4 +26,5 @@ jobs:
     with:
       images: '[{"name":"barlito/ci-test-app","target":"app"}]'
       context: tests/fixtures/app
+      dockerfile: tests/fixtures/app/Dockerfile
       registry: ghcr.io
