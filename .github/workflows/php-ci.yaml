@@ -4,15 +4,19 @@ on:
   workflow_call:
     inputs:
       checks:
+        description: Space-separated make targets run as quality checks
         type: string
         default: cs_fixer.dry_run phpcs phpstan
       tests:
+        description: Space-separated make targets run as tests
         type: string
         default: phpunit
       castor:
+        description: Install castor (pinned version, checksum verified)
         type: boolean
         default: true
       cache-paths:
+        description: Extra paths to cache, one per line, relative to the workspace root; the key hashes every composer.lock of the repository
         type: string
         default: ""
       working-directory:

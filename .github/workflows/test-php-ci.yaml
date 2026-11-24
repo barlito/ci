@@ -27,6 +27,7 @@ jobs:
       cache-paths: tests/fixtures/php-ci/vendor
 
   failures:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
