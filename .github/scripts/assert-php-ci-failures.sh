@@ -40,7 +40,7 @@ check_case() {
   if [ "$conclusion" != failure ]; then
     echo "::error::$name concluded $conclusion, expected failure"; status=1; return
   fi
-  logs=$(gh api "repos/$REPO/actions/jobs/$job_id/logs")
+  logs=$(gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$job_id/logs")
   for text in "$expected" "FIXTURE docker.undeploy.ci executed"; do
     if ! grep -qF "$text" <<<"$logs"; then
       echo "::error::$name logs lack: $text"; status=1; return
