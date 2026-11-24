@@ -1,0 +1,3 @@
+services:
+  proxy:
+    image: busybox:1.37

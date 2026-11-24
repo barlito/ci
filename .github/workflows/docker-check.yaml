@@ -1,0 +1,54 @@
+name: docker-check
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        type: string
+        default: Dockerfile
+      targets:
+        type: string
+        default: ""
+      context:
+        type: string
+        default: .
+      compose-files:
+        type: string
+        default: docker-compose-prod.yml
+      compose-env:
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      TARGETS: ${{ inputs.targets }}
+      CONTEXT: ${{ inputs.context }}
+      COMPOSE_FILES: ${{ inputs.compose-files }}
+      COMPOSE_ENV: ${{ inputs.compose-env }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build targets
+        run: |
+          for target in $TARGETS; do
+            docker buildx build --file "$DOCKERFILE" --target "$target" --output type=cacheonly "$CONTEXT"
+          done
+
+      - name: Validate compose files
+        run: |
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then export "${line?}"; fi
+          done <<< "$COMPOSE_ENV"
+          for file in $COMPOSE_FILES; do
+            docker compose -f "$file" config -q
+          done

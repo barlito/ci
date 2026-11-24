@@ -1,0 +1,16 @@
+name: test-image-scan-failures
+
+on: workflow_dispatch
+
+permissions: {}
+
+jobs:
+  findings-fail:
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/image-scan.yaml # zizmor: ignore[self-repository]
+    with:
+      dockerfile: tests/fixtures/image-scan/vulnerable/Dockerfile
+      context: tests/fixtures/image-scan/vulnerable
+      fail-on-findings: true

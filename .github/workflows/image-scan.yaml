@@ -1,0 +1,83 @@
+name: image-scan
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        type: string
+        default: Dockerfile
+      target:
+        type: string
+        default: ""
+      context:
+        type: string
+        default: .
+      severity:
+        type: string
+        default: CRITICAL,HIGH
+      ignore-unfixed:
+        type: boolean
+        default: true
+      fail-on-findings:
+        type: boolean
+        default: false
+
+permissions: {}
+
+env:
+  # Official image pinned by digest instead of trivy-action, whose release tags were hijacked.
+  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      TARGET: ${{ inputs.target }}
+      CONTEXT: ${{ inputs.context }}
+      SEVERITY: ${{ inputs.severity }}
+      IGNORE_UNFIXED: ${{ inputs.ignore-unfixed }}
+      FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: |
+          args=(-f "$DOCKERFILE" -t local/scan:latest)
+          if [ -n "$TARGET" ]; then args+=(--target "$TARGET"); fi
+          docker build "${args[@]}" "$CONTEXT"
+
+      - name: Scan with Trivy
+        run: |
+          args=(--scanners vuln --severity "$SEVERITY" --format sarif --output /out/trivy.sarif)
+          if [ "$IGNORE_UNFIXED" = "true" ]; then args+=(--ignore-unfixed); fi
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/out" \
+            "$TRIVY_IMAGE" image "${args[@]}" local/scan:latest
+
+      - name: Count findings
+        id: findings
+        run: echo "count=$(jq '[.runs[].results[]?] | length' trivy.sarif)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-${{ inputs.dockerfile }}-${{ inputs.target }}
+
+      - name: Fail on findings
+        if: inputs.fail-on-findings
+        env:
+          COUNT: ${{ steps.findings.outputs.count }}
+        run: |
+          if [ "$COUNT" -gt 0 ]; then
+            echo "::error::Trivy reported $COUNT finding(s) at severity $SEVERITY"
+            exit 1
+          fi

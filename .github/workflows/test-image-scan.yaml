@@ -1,0 +1,54 @@
+name: test-image-scan
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/image-scan.yaml
+      - .github/workflows/test-image-scan.yaml
+      - .github/workflows/test-image-scan-failures.yaml
+      - .github/scripts/assert-failure-cases.sh
+      - tests/fixtures/app/**
+      - tests/fixtures/image-scan/**
+
+permissions: {}
+
+concurrency:
+  group: test-image-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clean-defaults:
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/image-scan.yaml # zizmor: ignore[self-repository]
+    with:
+      dockerfile: tests/fixtures/app/Dockerfile
+      context: tests/fixtures/app
+      target: app
+
+  vulnerable-reports-only:
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/image-scan.yaml # zizmor: ignore[self-repository]
+    with:
+      dockerfile: tests/fixtures/image-scan/vulnerable/Dockerfile
+      context: tests/fixtures/image-scan/vulnerable
+
+  vulnerable-fails:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ github.head_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dispatch failure cases and assert
+        run: .github/scripts/assert-failure-cases.sh test-image-scan-failures.yaml 'findings-fail::Trivy reported'
