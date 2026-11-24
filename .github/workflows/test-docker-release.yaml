@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   release-stable:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       packages: write
@@ -119,6 +120,7 @@ jobs:
           done
 
   assert-failures:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
