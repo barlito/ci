@@ -1,6 +1,7 @@
 STACK ?= fixture
 REGISTRY ?= localhost:5000
 TRACE_FILE ?= $(CURDIR)/trace.log
+DEPLOY_TIMEOUT ?= 180
 CONFIG_VERSION := $(shell sha1sum app.conf | cut -c1-12)
 export REGISTRY CONFIG_VERSION TRACE_FILE
 
@@ -12,13 +13,13 @@ REQUIRE_TAG = $(if $(TAG),,$(error TAG is required))
 deploy.prod:
 	$(REQUIRE_TAG)
 	$(TRACE)
-	docker stack deploy --with-registry-auth --detach=false -c docker-compose-prod.yml $(STACK)
+	timeout $(DEPLOY_TIMEOUT) docker stack deploy --with-registry-auth --detach=false -c docker-compose-prod.yml $(STACK)
 
 deploy.update:
 	$(REQUIRE_TAG)
 	$(TRACE)
-	docker service update --with-registry-auth --detach=false --image $(REGISTRY)/fixture-app:$(TAG) $(STACK)_app
-	docker service update --with-registry-auth --detach=false --image $(REGISTRY)/fixture-worker:$(TAG) $(STACK)_worker
+	timeout $(DEPLOY_TIMEOUT) docker service update --with-registry-auth --detach=false --image $(REGISTRY)/fixture-app:$(TAG) $(STACK)_app
+	timeout $(DEPLOY_TIMEOUT) docker service update --with-registry-auth --detach=false --image $(REGISTRY)/fixture-worker:$(TAG) $(STACK)_worker
 
 rollback:
 	$(REQUIRE_TAG)

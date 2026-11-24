@@ -21,7 +21,7 @@ concurrency:
 jobs:
   swarm-cycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       REGISTRY: localhost:5000
       TRACE_FILE: ${{ github.workspace }}/trace.log
@@ -81,3 +81,11 @@ jobs:
           grep -E '^deploy\.update TAG=v1\.1\.0 ' "$TRACE_FILE"
           grep -E '^rollback TAG=v1\.0\.0 RESTORE=1 ' "$TRACE_FILE"
           grep -E '^deploy\.recover .*FIXTURE_ENV=FIXTURE_SECRET$' "$TRACE_FILE"
+
+      - name: Dump swarm state
+        if: failure()
+        run: |
+          docker service ls
+          docker service ps --no-trunc fixture_app fixture_worker || true
+          docker service logs --tail 50 fixture_app || true
+          docker ps -a
