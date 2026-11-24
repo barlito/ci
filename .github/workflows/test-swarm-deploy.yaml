@@ -187,4 +187,7 @@ jobs:
             'target-failure-no-recover::deploy.recover is not defined, skipping recovery' \
             'target-failure::make e2e.fail failed' \
             'target-failure::deploy.recover exported= castor=no' \
-            'target-failure::E2E-EVIDENCE-END'
+            'target-failure::E2E-EVIDENCE-END' \
+            'target-timeout::make e2e.hang failed or was interrupted' \
+            'target-timeout::deploy.recover exported= castor=no' \
+            'target-timeout::E2E-EVIDENCE-END'
