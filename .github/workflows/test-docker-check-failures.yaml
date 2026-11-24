@@ -1,0 +1,12 @@
+name: test-docker-check-failures
+
+on: workflow_dispatch
+
+permissions: {}
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Registers the workflow on the default branch; cases live on the dispatched branch."
