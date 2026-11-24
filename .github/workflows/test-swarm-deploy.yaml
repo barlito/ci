@@ -138,7 +138,7 @@ jobs:
 
           out=$(log deploy-update)
           expect "$out" "deploy\.update TAG=v1\.1\.0 RESTORE= $host "
-          expect "$out" 'deploy\.update exported=DOCKER_HUB_READ_ONLY_ACCESS_TOKEN,DOCKER_HUB_USERNAME,SERVER_USERNAME castor=yes optional=DOCKER_HUB_READ_ONLY_ACCESS_TOKEN:19,E2E_OPT_MISSING:0'
+          expect "$out" 'deploy\.update exported=DOCKER_HUB_READ_ONLY_ACCESS_TOKEN,DOCKER_HUB_USERNAME,SERVER_USERNAME castor=yes optional=DOCKER_HUB_READ_ONLY_ACCESS_TOKEN:set,E2E_OPT_MISSING:empty'
           expect "$out" 'Optional secrets not set, exported empty: E2E_OPT_MISSING'
           expect "$out" 'Found localhost:5000/fixture-worker:v1\.1\.0'
           expect "$out" 'E2E-SERVED ok v1\.1\.0'

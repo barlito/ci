@@ -8,8 +8,9 @@ if command -v castor >/dev/null; then castor=yes; fi
 optional=""
 for name in DOCKER_HUB_READ_ONLY_ACCESS_TOKEN E2E_OPT_MISSING; do
   if [ -n "${!name+x}" ]; then
-    value=${!name}
-    optional+="${optional:+,}$name:${#value}"
+    state="set"
+    if [ -z "${!name}" ]; then state=empty; fi
+    optional+="${optional:+,}$name:$state"
   fi
 done
 printf '%s exported=%s castor=%s%s\n' "$1" "$exported" "$castor" "${optional:+ optional=$optional}" >> "${TRACE_FILE:?}"
