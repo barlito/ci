@@ -42,6 +42,10 @@ on:
         description: Reserved for tests. Replaces the ref name and skips the tag-ref check
         type: string
         default: ''
+      e2e-extra-tags:
+        description: Reserved for tests. Space-separated tags added to the repository tags when deciding whether latest moves
+        type: string
+        default: ''
     secrets:
       registry-username:
         required: false
@@ -79,6 +83,7 @@ jobs:
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           IMAGES: ${{ inputs.images }}
           CACHE: ${{ inputs.cache }}
+          E2E_EXTRA_TAGS: ${{ inputs.e2e-extra-tags }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -111,7 +116,7 @@ jobs:
           if [[ "$tag" != *-* ]] && [ "$RELEASE_PRERELEASE" != true ]; then
             stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
             repo_tags=$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
-            highest=$(printf '%s\n%s\n' "$repo_tags" "$tag" | grep -E "$stable" | sort -V | tail -n 1)
+            highest=$(printf '%s\n%s\n' "$repo_tags" "$tag $E2E_EXTRA_TAGS" | tr ' ' '\n' | grep -E "$stable" | sort -V | tail -n 1)
             if [ "$highest" = "$tag" ]; then
               latest=true
             else

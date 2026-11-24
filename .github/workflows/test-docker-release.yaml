@@ -45,24 +45,8 @@ jobs:
       registry-username: github-actions
       registry-token: ${{ secrets.GITHUB_TOKEN }}
 
-  create-tag:
-    needs: release-prerelease
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      NEWER_TAG: v999999.5.${{ github.run_id }}
-      SHA: ${{ github.sha }}
-    steps:
-      - name: Create a higher stable tag so the older release must not move latest
-        run: gh api --method POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$NEWER_TAG" -f "sha=$SHA" >/dev/null
-
   release-older:
-    needs: create-tag
+    needs: release-prerelease
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     permissions:
       contents: read
@@ -73,6 +57,7 @@ jobs:
       context: tests/fixtures/app
       registry: ghcr.io
       e2e-tag: v999998.0.${{ github.run_id }}
+      e2e-extra-tags: v999999.5.0
     secrets:
       registry-username: barlito
       registry-token: ${{ secrets.GITHUB_TOKEN }}
@@ -165,24 +150,6 @@ jobs:
             --jq '.jobs[] | select(.name | startswith("release-older")) | .id')
           timeout 60 gh api --allow-escape-sequences "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/older.log"
           grep -Fq 'is not the highest stable tag' "$RUNNER_TEMP/older.log" || fail "older tag: latest skip notice missing"
-
-  delete-tag:
-    needs: [create-tag, assert-release]
-    if: ${{ always() && needs.create-tag.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      NEWER_TAG: v999999.5.${{ github.run_id }}
-    steps:
-      - name: Delete the temporary tag
-        run: |
-          if gh api "repos/$GH_REPO/git/ref/tags/$NEWER_TAG" >/dev/null 2>&1; then
-            gh api --method DELETE "repos/$GH_REPO/git/refs/tags/$NEWER_TAG"
-          fi
 
   assert-failures:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
