@@ -1,0 +1,21 @@
+services:
+  app:
+    image: ${REGISTRY:-localhost:5000}/fixture-app:${TAG:?TAG is required}
+    configs:
+      - source: app_config
+        target: /www/config
+    deploy:
+      replicas: 1
+      update_config:
+        order: start-first
+        failure_action: rollback
+
+  worker:
+    image: ${REGISTRY:-localhost:5000}/fixture-worker:${TAG:?TAG is required}
+    deploy:
+      replicas: 1
+
+configs:
+  app_config:
+    name: fixture_app_config_${CONFIG_VERSION:?CONFIG_VERSION is required}
+    file: ./app.conf
