@@ -16,7 +16,7 @@ before=$(list_runs)
 gh workflow run "$workflow" --ref "$BRANCH"
 
 run_id=""
-for _ in $(seq 1 24); do
+for _ in $(seq 1 36); do
     sleep 5
     run_id=$(comm -13 <(sort <<<"$before") <(list_runs | sort) | sort -n | tail -1)
     [ -n "$run_id" ] && break
