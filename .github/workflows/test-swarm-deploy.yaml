@@ -1,0 +1,221 @@
+name: test-swarm-deploy
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/swarm-deploy.yaml
+      - .github/workflows/swarm-rollback.yaml
+      - .github/workflows/test-swarm-deploy.yaml
+      - .github/workflows/test-swarm-deploy-failures.yaml
+      - tests/fixtures/swarm-deploy/**
+      - tests/fixtures/app/**
+
+permissions: {}
+
+concurrency:
+  group: test-swarm-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      client-key: ${{ steps.keys.outputs.client-key }}
+      sshd-host-key: ${{ steps.keys.outputs.sshd-host-key }}
+      host-key-line: ${{ steps.keys.outputs.host-key-line }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: keys
+        run: tests/fixtures/swarm-deploy/gen-keys.sh 127.0.0.1 2222
+
+  deploy-full:
+    needs: keys
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/swarm-deploy.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
+    with:
+      full: true
+      environment: e2e
+      images: localhost:5000/fixture-app localhost:5000/fixture-worker
+      env-secrets: DOCKER_HUB_USERNAME
+      working-directory: tests/fixtures/swarm-deploy
+      e2e-local-target: true
+      e2e-tag: v1.1.0
+    secrets:
+      SERVER_USERNAME: runner
+      SERVER_PORT: "2222"
+      SERVER_HOST_KEY: ${{ needs.keys.outputs.host-key-line }}
+      SSH_PRIVATE_KEY: ${{ needs.keys.outputs.client-key }}
+      DOCKER_HUB_USERNAME: e2e-user
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
+      e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
+
+  deploy-update:
+    needs: [keys, deploy-full]
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/swarm-deploy.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
+    with:
+      environment: e2e
+      images: |
+        localhost:5000/fixture-app
+        localhost:5000/fixture-worker
+      env-secrets: |
+        DOCKER_HUB_USERNAME
+        SERVER_USERNAME
+      castor: true
+      working-directory: tests/fixtures/swarm-deploy
+      e2e-local-target: true
+      e2e-tag: v1.1.0
+    secrets:
+      SERVER_USERNAME: runner
+      SERVER_PORT: "2222"
+      SERVER_HOST_KEY: ${{ needs.keys.outputs.host-key-line }}
+      SSH_PRIVATE_KEY: ${{ needs.keys.outputs.client-key }}
+      DOCKER_HUB_USERNAME: e2e-user
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
+      e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
+
+  rollback:
+    needs: [keys, deploy-update]
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/swarm-rollback.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
+    with:
+      tag: v1.0.0
+      restore: "1"
+      environment: e2e
+      images: localhost:5000/fixture-app localhost:5000/fixture-worker
+      working-directory: tests/fixtures/swarm-deploy
+      e2e-local-target: true
+    secrets:
+      SERVER_USERNAME: runner
+      SERVER_PORT: "2222"
+      SERVER_HOST_KEY: ${{ needs.keys.outputs.host-key-line }}
+      SSH_PRIVATE_KEY: ${{ needs.keys.outputs.client-key }}
+      DOCKER_HUB_USERNAME: e2e-user
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
+      e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
+
+  assert-happy-path:
+    needs: [deploy-full, deploy-update, rollback]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      deployments: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Assert served versions, traces and the Deployment
+        run: |
+          set -euo pipefail
+          log() {
+            id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate --jq ".jobs[] | select(.name | startswith(\"$1 /\")) | .id" | head -n1)
+            [ -n "$id" ] || { echo "::error::job $1 not found" >&2; exit 1; }
+            gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs"
+          }
+          expect() { grep -Eq -- "$2" <<<"$1" || { echo "::error::missing in log: $2"; exit 1; }; }
+          host='DOCKER_HOST=ssh://\*+@127\.0\.0\.1:\*+'
+
+          out=$(log deploy-full)
+          expect "$out" "deploy\.prod TAG=v1\.1\.0 RESTORE= $host "
+          expect "$out" 'deploy\.prod exported=DOCKER_HUB_USERNAME castor=no'
+          expect "$out" 'E2E-SERVED ok v1\.1\.0'
+
+          out=$(log deploy-update)
+          expect "$out" "deploy\.update TAG=v1\.1\.0 RESTORE= $host "
+          expect "$out" 'deploy\.update exported=DOCKER_HUB_USERNAME,SERVER_USERNAME castor=yes'
+          expect "$out" 'Found localhost:5000/fixture-worker:v1\.1\.0'
+          expect "$out" 'E2E-SERVED ok v1\.1\.0'
+
+          out=$(log rollback)
+          expect "$out" "rollback TAG=v1\.0\.0 RESTORE=1 $host "
+          expect "$out" 'rollback exported= castor=no'
+          expect "$out" 'E2E-SERVED ok v1\.0\.0'
+
+          ids=$(gh api "repos/$REPO/deployments?environment=e2e&sha=$SHA" --jq '.[].id')
+          succeeded=0
+          for id in $ids; do
+            gh api "repos/$REPO/deployments/$id/statuses" \
+              --jq ".[] | select(.state == \"success\" and (.log_url | contains(\"/actions/runs/$RUN_ID/\"))) | .id" | grep . >/dev/null \
+              && succeeded=$((succeeded + 1))
+          done
+          [ "$succeeded" -eq 3 ] || { echo "::error::expected 3 successful Deployments of run $RUN_ID for environment e2e, got $succeeded"; exit 1; }
+
+  failures:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      HEAD_REF: ${{ github.head_ref }}
+      CORRELATION: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Dispatch the expected-failure cases
+        run: |
+          set -euo pipefail
+          gh workflow run test-swarm-deploy-failures.yaml --repo "$REPO" --ref "$HEAD_REF" -f correlation="$CORRELATION"
+
+      - name: Wait for the cases
+        run: |
+          set -euo pipefail
+          run_id=
+          for _ in $(seq 1 30); do
+            run_id=$(gh run list --repo "$REPO" --workflow test-swarm-deploy-failures.yaml --event workflow_dispatch --limit 20 \
+              --json databaseId,displayTitle --jq ".[] | select(.displayTitle | endswith(\"$CORRELATION\")) | .databaseId" | head -n1)
+            [ -z "$run_id" ] || break
+            sleep 10
+          done
+          [ -n "$run_id" ] || { echo "::error::dispatched run not found"; exit 1; }
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+          timeout 1500 sh -c "until [ \"\$(gh run view $run_id --repo $REPO --json status --jq .status)\" = completed ]; do sleep 20; done" \
+            || { echo "::error::cases did not finish in time"; exit 1; }
+
+      - name: Assert every case failed for the expected reason
+        run: |
+          set -euo pipefail
+          jobs=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate)
+          status=0
+          check() {
+            local case=$1 pattern=$2
+            local row id conclusion
+            row=$(jq -r --arg c "$case" '.jobs[] | select(.name | startswith($c + " /")) | "\(.id) \(.conclusion)"' <<<"$jobs" | head -n1)
+            [ -n "$row" ] || { echo "::error::$case: job not found in run $RUN_ID"; status=1; return; }
+            id=${row%% *}; conclusion=${row##* }
+            if [ "$conclusion" != failure ]; then echo "::error::$case concluded '$conclusion', expected failure"; status=1; return; fi
+            if ! gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs" | grep -Eq -- "$pattern"; then
+              echo "::error::$case log lacks: $pattern"; status=1; return
+            fi
+            echo "ok: $case"
+          }
+          check not-a-tag 'This workflow must run on a tag'
+          check invalid-tag "Invalid tag 'v1\.1'"
+          check no-tag-with-images 'require-tag: false is only allowed when images is empty'
+          check missing-secret "Secret 'DOES_NOT_EXIST' listed in env-secrets does not exist"
+          check missing-image 'Image localhost:5000/does-not-exist:v1\.1\.0 not found'
+          check wrong-host-key 'SSH connection to the server failed'
+          check unknown-rollback-tag 'Tag v9\.9\.9 does not exist in the repository'
+          check rollback-not-default-branch 'Rollback must run on the default branch'
+          check reserved-secret-name "Secret name 'MAKEFLAGS' is reserved"
+          check lowercase-secret-name "Invalid secret name 'github_token'"
+          check target-failure-no-recover 'make e2e\.fail failed'
+          check target-failure-no-recover 'deploy\.recover is not defined, skipping recovery'
+          check target-failure 'make e2e\.fail failed'
+          check target-failure 'deploy\.recover exported= castor=no'
+          check target-failure 'E2E-EVIDENCE-END'
+          exit "$status"

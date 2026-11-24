@@ -1,0 +1,288 @@
+name: swarm-rollback
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to roll back to (vX.Y.Z[-suffix]), must exist in the repository
+        type: string
+        required: true
+      restore:
+        description: Optional value passed to make rollback as RESTORE (for example a backup name)
+        type: string
+        default: ""
+      environment:
+        description: GitHub environment of the job (secrets, variables, Deployment record)
+        type: string
+        default: production
+      images:
+        description: Space-separated image references without tag, each <ref>:<TAG> must exist before anything runs
+        type: string
+        default: ""
+      env-secrets:
+        description: Space-separated secret names exported to make, no other secret is exported
+        type: string
+        default: ""
+      castor:
+        description: Install castor before running make
+        type: boolean
+        default: false
+      submodules:
+        description: Checkout submodules
+        type: boolean
+        default: true
+      working-directory:
+        description: Directory where make runs
+        type: string
+        default: .
+      target:
+        description: Overrides the make target, default rollback
+        type: string
+        default: ""
+      timeout-minutes:
+        type: number
+        default: 20
+      e2e-local-target:
+        description: Reserved for the tests of barlito/ci, deploys to a sshd and swarm started on the runner
+        type: boolean
+        default: false
+    secrets:
+      SERVER_USERNAME:
+        required: false
+      SERVER_PORT:
+        required: false
+      SERVER_HOST_KEY:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      DOCKER_HUB_USERNAME:
+        required: false
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN:
+        required: false
+      e2e-ssh-host-key:
+        description: Reserved for the tests of barlito/ci, private host key of the sshd started on the runner
+        required: false
+
+permissions: {}
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - name: Validate inputs
+        env:
+          TAG: ${{ inputs.tag }}
+          RESTORE: ${{ inputs.restore }}
+          IMAGES: ${{ inputs.images }}
+          ENV_SECRETS: ${{ inputs.env-secrets }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          TARGET_OVERRIDE: ${{ inputs.target }}
+          E2E: ${{ inputs.e2e-local-target }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] only the names are read here, values are read in the rollback step for the listed names
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          if [ "$E2E" = true ] && [ "$REPOSITORY" != barlito/ci ]; then
+            fail "e2e-local-target is reserved for the tests of barlito/ci"
+          fi
+
+          if [ "$E2E" != true ] && { [ -z "$DEFAULT_BRANCH" ] || [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; }; then
+            fail "Rollback must run on the default branch (dispatched on '$REF')"
+          fi
+
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || fail "Invalid tag '$TAG' (expected vX.Y.Z[-suffix])"
+          [ -z "$RESTORE" ] || [[ "$RESTORE" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || fail "Invalid restore value"
+
+          [[ "$WORKING_DIRECTORY" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ && "$WORKING_DIRECTORY" != *..* ]] \
+            || fail "Invalid working-directory"
+
+          target=${TARGET_OVERRIDE:-rollback}
+          [[ "$target" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || fail "Invalid make target"
+
+          read -r -d '' -a refs <<<"$IMAGES" || true
+          for ref in "${refs[@]}"; do
+            [[ "$ref" =~ ^[a-z0-9][A-Za-z0-9._:/-]*$ ]] || fail "Invalid image reference '$ref'"
+          done
+
+          read -r -d '' -a names <<<"$ENV_SECRETS" || true
+          for name in "${names[@]}"; do
+            [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fail "Invalid secret name '$name'"
+            case "$name" in
+              PATH|HOME|SHELL|IFS|BASH_ENV|ENV|TAG|TARGET|RESTORE|ENV_SECRETS|SECRETS_JSON|MAKE*|MFLAGS|DOCKER_HOST|DOCKER_CONFIG|DOCKER_CONTEXT|LD_*|GITHUB_*|RUNNER_*)
+                fail "Secret name '$name' is reserved" ;;
+            esac
+            jq -e --arg n "$name" 'has($n)' <<<"$SECRETS_JSON" >/dev/null || fail "Secret '$name' listed in env-secrets does not exist"
+          done
+
+          {
+            echo "TAG=$TAG"
+            echo "TARGET=$target"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: ${{ inputs.submodules }}
+          fetch-depth: 0
+
+      - name: Start the e2e local target
+        id: e2e
+        if: inputs.e2e-local-target
+        env:
+          E2E_SSHD_HOST_KEY: ${{ secrets.e2e-ssh-host-key }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: tests/fixtures/swarm-deploy/e2e-local-target.sh setup
+
+      - name: Check that the tag exists
+        run: |
+          git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || { echo "::error::Tag $TAG does not exist in the repository"; exit 1; }
+
+      - name: Log in to the registry (read-only token)
+        env:
+          REGISTRY: ${{ inputs.e2e-local-target && 'localhost:5000' || '' }}
+          DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_READ_ONLY_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$DOCKER_HUB_USERNAME" ] || { echo "::error::secret DOCKER_HUB_USERNAME is not set"; exit 1; }
+          [ -n "$DOCKER_HUB_TOKEN" ] || { echo "::error::secret DOCKER_HUB_READ_ONLY_ACCESS_TOKEN is not set"; exit 1; }
+          printf '%s' "$DOCKER_HUB_TOKEN" | docker login ${REGISTRY:+"$REGISTRY"} --username "$DOCKER_HUB_USERNAME" --password-stdin
+
+      - name: Check that the images exist
+        if: inputs.images != ''
+        env:
+          IMAGES: ${{ inputs.images }}
+          INSECURE: ${{ inputs.e2e-local-target && 'true' || '' }}
+        run: |
+          set -euo pipefail
+          read -r -d '' -a refs <<<"$IMAGES" || true
+          missing=0
+          for ref in "${refs[@]}"; do
+            if timeout 60 docker manifest inspect ${INSECURE:+--insecure} "$ref:$TAG" >/dev/null 2>&1; then
+              echo "Found $ref:$TAG"
+            else
+              echo "::error::Image $ref:$TAG not found"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Install castor
+        if: inputs.castor
+        env:
+          CASTOR_VERSION: v1.9.1
+          CASTOR_SHA256: 487ec4748875128cca4a05e965b05327e5fb47f878e344f7dec41c8a79caf3d6
+        run: |
+          set -euo pipefail
+          curl -fsSL --max-time 120 -o "$RUNNER_TEMP/castor" "https://github.com/jolicode/castor/releases/download/$CASTOR_VERSION/castor.linux-amd64"
+          echo "$CASTOR_SHA256  $RUNNER_TEMP/castor" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/castor" /usr/local/bin/castor
+
+      - name: Set up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_HOST_KEY: ${{ secrets.SERVER_HOST_KEY }}
+          SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_HOST: ${{ inputs.e2e-local-target && '127.0.0.1' || vars.SERVER_HOST }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          for name in SSH_PRIVATE_KEY SERVER_HOST_KEY SERVER_USERNAME SERVER_PORT SERVER_HOST; do
+            [ -n "${!name}" ] || fail "$name is not set (secret, SERVER_HOST is a variable)"
+          done
+          [[ "$SERVER_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || fail "Invalid SERVER_HOST"
+          [[ "$SERVER_PORT" =~ ^[0-9]{1,5}$ ]] || fail "Invalid SERVER_PORT"
+          [[ "$SERVER_USERNAME" =~ ^[a-z_][a-z0-9_-]*$ ]] || fail "Invalid SERVER_USERNAME"
+          [[ "$SERVER_HOST_KEY" != *$'\n'* && "$SERVER_HOST_KEY" == *" ssh-ed25519 "* ]] \
+            || fail "SERVER_HOST_KEY must be a single known_hosts line with an ed25519 key"
+
+          umask 077
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$SERVER_HOST_KEY" > "$HOME/.ssh/deploy_known_hosts"
+          if [ "$SERVER_PORT" = 22 ]; then entry=$SERVER_HOST; else entry="[$SERVER_HOST]:$SERVER_PORT"; fi
+          ssh-keygen -F "$entry" -f "$HOME/.ssh/deploy_known_hosts" >/dev/null || fail "SERVER_HOST_KEY has no entry for the server"
+
+          cat > "$HOME/.ssh/config" <<EOF_SSH
+          Host $SERVER_HOST
+            IdentityFile $HOME/.ssh/deploy_key
+            IdentitiesOnly yes
+            UserKnownHostsFile $HOME/.ssh/deploy_known_hosts
+            GlobalKnownHostsFile /dev/null
+            StrictHostKeyChecking yes
+            HostKeyAlgorithms ssh-ed25519
+            BatchMode yes
+            ConnectTimeout 30
+            ServerAliveInterval 15
+            ServerAliveCountMax 4
+            ControlMaster auto
+            ControlPath $HOME/.ssh/cm-%C
+            ControlPersist 10m
+          EOF_SSH
+
+          ssh -l "$SERVER_USERNAME" -p "$SERVER_PORT" -- "$SERVER_HOST" true \
+            || fail "SSH connection to the server failed (unreachable, key refused or host key mismatch)"
+          echo "DOCKER_HOST=ssh://$SERVER_USERNAME@$SERVER_HOST:$SERVER_PORT" >> "$GITHUB_ENV"
+
+      - name: Run make rollback
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          RESTORE: ${{ inputs.restore }}
+          ENV_SECRETS: ${{ inputs.env-secrets }}
+          SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] values are read only for the names listed in env-secrets, then unset before make runs
+        run: |
+          set -euo pipefail
+          read -r -d '' -a names <<<"$ENV_SECRETS" || true
+          for name in "${names[@]}"; do
+            value=$(jq -er --arg n "$name" '.[$n] | select(type == "string")' <<<"$SECRETS_JSON")
+            while IFS= read -r line; do
+              [ -z "$line" ] || echo "::add-mask::$line"
+            done <<<"$value"
+            export "$name=$value"
+          done
+          unset SECRETS_JSON ENV_SECRETS value
+
+          rc=0
+          make "$TARGET" TAG="$TAG" ${RESTORE:+RESTORE="$RESTORE"} || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::make $TARGET failed (exit $rc)"
+            database=$(make -pRrq : 2>/dev/null || true)
+            if grep -q '^deploy\.recover:' <<<"$database"; then
+              make deploy.recover || echo "::warning::make deploy.recover failed"
+            else
+              echo "::notice::deploy.recover is not defined, skipping recovery"
+            fi
+            exit 1
+          fi
+
+      - name: Print e2e evidence
+        if: always() && steps.e2e.outcome == 'success'
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          "$GITHUB_WORKSPACE/tests/fixtures/swarm-deploy/e2e-local-target.sh" evidence
+
+      - name: Clean up SSH and registry credentials
+        if: always()
+        env:
+          REGISTRY: ${{ inputs.e2e-local-target && 'localhost:5000' || '' }}
+        run: |
+          for socket in "$HOME"/.ssh/cm-*; do
+            if [ -S "$socket" ]; then ssh -S "$socket" -O exit cleanup >/dev/null 2>&1 || true; fi
+          done
+          rm -f "$HOME/.ssh/deploy_key" "$HOME/.ssh/deploy_known_hosts" "$HOME/.ssh/config"
+          env -u DOCKER_HOST docker logout ${REGISTRY:+"$REGISTRY"} >/dev/null 2>&1 || true
