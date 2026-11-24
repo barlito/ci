@@ -4,6 +4,14 @@ set -euo pipefail
 
 : "${REPO:?}" "${BRANCH:?}"
 workflow=test-php-ci-failures.yaml
+
+# workflow_dispatch only resolves workflows present on the default branch
+default_branch=$(gh api "repos/$REPO" --jq .default_branch)
+if ! gh api "repos/$REPO/contents/.github/workflows/$workflow?ref=$default_branch" >/dev/null 2>&1; then
+  echo "::warning::$workflow is not on $default_branch yet, failure cases skipped"
+  exit 0
+fi
+
 since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 gh workflow run "$workflow" --repo "$REPO" --ref "$BRANCH"
