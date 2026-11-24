@@ -107,7 +107,7 @@ jobs:
           for prefix in release-stable release-prerelease; do
             job_id=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
               --jq ".jobs[] | select(.name | startswith(\"$prefix\")) | .id")
-            timeout 60 gh api "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/$prefix.log"
+            timeout 60 gh api --allow-escape-sequences "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/$prefix.log"
             for image in app worker; do
               awk -v m="build-image[barlito/ci-test-$image]" '/build-image\[/ { cur = index($0, m) > 0 } cur' \
                 "$RUNNER_TEMP/$prefix.log" > "$RUNNER_TEMP/$prefix-$image.log"
@@ -161,7 +161,7 @@ jobs:
             job_id=$(gh api "repos/$GH_REPO/actions/runs/$run_id/jobs?per_page=100" --paginate \
               --jq ".jobs[] | select(.name | startswith(\"$prefix\")) | select(.conclusion == \"failure\") | .id")
             [ -n "$job_id" ] || fail "$prefix: job did not fail"
-            timeout 60 gh api "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/$prefix.log"
+            timeout 60 gh api --allow-escape-sequences "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/$prefix.log"
             grep -Fq "$expected" "$RUNNER_TEMP/$prefix.log" || fail "$prefix: log does not contain: $expected"
           }
           check_case bad-semver 'Tag 1.2.3 is not a valid release tag'
