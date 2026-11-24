@@ -1,0 +1,44 @@
+name: test-php-ci
+
+on:
+  pull_request:
+    paths:
+      - tests/fixtures/php-ci/**
+      - .github/scripts/assert-php-ci-failures.sh
+      - .github/workflows/php-ci.yaml
+      - .github/workflows/test-php-ci.yaml
+      - .github/workflows/test-php-ci-failures.yaml
+
+permissions: {}
+
+concurrency:
+  group: test-php-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  green:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/php-ci.yaml # zizmor: ignore[self-repository] actionlint rejects the $/ syntax
+    with:
+      working-directory: tests/fixtures/php-ci
+      checks: check.ok
+      tests: test.ok
+      cache-paths: tests/fixtures/php-ci/vendor
+
+  failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dispatch the failure cases and assert their outcome
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref }}
+        run: bash .github/scripts/assert-php-ci-failures.sh
