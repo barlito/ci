@@ -2,7 +2,7 @@ name: promote
 
 on:
   release:
-    types: [published]
+    types: [released]
 
 permissions: {}
 

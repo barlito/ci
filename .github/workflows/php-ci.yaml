@@ -1,0 +1,129 @@
+name: php-ci
+
+on:
+  workflow_call:
+    inputs:
+      checks:
+        description: Space-separated make targets run as quality checks
+        type: string
+        default: cs_fixer.dry_run phpcs phpstan
+      tests:
+        description: Space-separated make targets run as tests
+        type: string
+        default: phpunit
+      castor:
+        description: Install castor (pinned version, checksum verified)
+        type: boolean
+        default: true
+      cache-paths:
+        description: Extra paths to cache, one per line, relative to the workspace root; the key hashes every composer.lock of the repository
+        type: string
+        default: ""
+      working-directory:
+        description: Directory holding the Makefile, reserved for the tests of this repository
+        type: string
+        default: .
+    secrets:
+      DOCKER_HUB_USERNAME:
+        required: false
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN:
+        required: false
+
+permissions: {}
+
+env:
+  CASTOR_VERSION: v1.9.1
+  CASTOR_SHA256: 487ec4748875128cca4a05e965b05327e5fb47f878e344f7dec41c8a79caf3d6
+
+jobs:
+  php-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Install castor
+        if: ${{ inputs.castor }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/castor" "https://github.com/jolicode/castor/releases/download/$CASTOR_VERSION/castor.linux-amd64"
+          echo "$CASTOR_SHA256  $RUNNER_TEMP/castor" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/castor" /usr/local/bin/castor
+
+      - name: Check Docker Hub credentials
+        id: docker-hub
+        env:
+          DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_READ_ONLY_ACCESS_TOKEN }}
+        run: |
+          if [ -n "$DOCKER_HUB_USERNAME" ] && [ -n "$DOCKER_HUB_TOKEN" ]; then
+            echo "login=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to Docker Hub
+        if: ${{ steps.docker-hub.outputs.login == 'true' }}
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_READ_ONLY_ACCESS_TOKEN }}
+
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.composer/cache/files
+            ${{ inputs.cache-paths }}
+          key: php-ci-${{ runner.os }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: php-ci-${{ runner.os }}-
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Expose GitHub runtime for the gha layer cache
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+
+      - name: Deploy CI stack
+        id: deploy
+        env:
+          github_token: ${{ github.token }}
+        # The cache dir must exist as the runner, or the bind mount makes it root-owned
+        run: |
+          mkdir -p ~/.composer/cache/files
+          USER_ID=$(id -u) GROUP_ID=$(id -g) make deploy.ci
+
+      - name: Run checks
+        id: checks
+        if: ${{ steps.deploy.outcome == 'success' }}
+        env:
+          TARGETS: ${{ inputs.checks }}
+        run: |
+          failed=""
+          for target in $TARGETS; do
+            echo "::group::make $target"
+            if ! make "$target"; then failed="$failed $target"; fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then echo "::error::Failed checks:$failed"; exit 1; fi
+
+      - name: Run tests
+        if: ${{ !cancelled() && steps.deploy.outcome == 'success' }}
+        env:
+          TARGETS: ${{ inputs.tests }}
+        run: |
+          failed=""
+          for target in $TARGETS; do
+            echo "::group::make $target"
+            if ! make "$target"; then failed="$failed $target"; fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then echo "::error::Failed tests:$failed"; exit 1; fi
+
+      - name: Undeploy CI stack
+        if: always()
+        run: make docker.undeploy.ci
