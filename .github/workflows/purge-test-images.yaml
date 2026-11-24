@@ -1,0 +1,52 @@
+name: purge-test-images
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      max-age-days:
+        description: Delete versions older than this many days
+        type: number
+        default: 7
+
+permissions: {}
+
+concurrency:
+  group: purge-test-images
+  cancel-in-progress: false
+
+jobs:
+  purge:
+    if: github.repository == 'barlito/ci'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OWNER: ${{ github.repository_owner }}
+      MAX_AGE_DAYS: ${{ inputs.max-age-days || 7 }}
+    steps:
+      - name: Delete old versions of the e2e images and of the build cache
+        run: |
+          set -euo pipefail
+          [[ "$MAX_AGE_DAYS" =~ ^[0-9]+$ ]] || { echo "::error::max-age-days must be a whole number"; exit 1; }
+          # Versions pushed within an hour of the newest one belong to the last run (index, image and attestation manifests) and are kept
+          purge() {
+            local package=$1 only_untagged=$2 versions cutoff ids deleted=0
+            versions="$(gh api --paginate "/users/$OWNER/packages/container/$package/versions?per_page=100" --jq '.[]' | jq -s .)"
+            cutoff="$(jq -r --argjson days "$MAX_AGE_DAYS" '
+              [now - $days * 86400, ((map(.created_at | fromdateiso8601) | max) - 3600)] | min' <<<"$versions")"
+            ids="$(jq -r --argjson cutoff "$cutoff" --argjson untagged "$only_untagged" '
+              .[] | select((.created_at | fromdateiso8601) < $cutoff)
+                  | select(($untagged | not) or (.metadata.container.tags | length == 0)) | .id' <<<"$versions")"
+            for id in $ids; do
+              gh api --method DELETE "/users/$OWNER/packages/container/$package/versions/$id" >/dev/null
+              deleted=$((deleted + 1))
+            done
+            echo "$package: deleted $deleted of $(jq length <<<"$versions") versions" | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          purge ci-test-app false
+          purge ci-test-worker false
+          purge ci true
