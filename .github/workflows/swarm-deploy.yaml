@@ -123,20 +123,17 @@ jobs:
           fi
           [[ "$target" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || fail "Invalid make target"
 
-          read -ra refs <<<"$IMAGES"
+          read -r -d '' -a refs <<<"$IMAGES" || true
           for ref in "${refs[@]}"; do
             [[ "$ref" =~ ^[a-z0-9][A-Za-z0-9._:/-]*$ ]] || fail "Invalid image reference '$ref'"
           done
 
-          read -ra names <<<"$ENV_SECRETS"
+          read -r -d '' -a names <<<"$ENV_SECRETS" || true
           for name in "${names[@]}"; do
-            [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "Invalid secret name '$name'"
-            lower=${name,,}
+            [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fail "Invalid secret name '$name'"
             case "$name" in
-              PATH|HOME|SHELL|IFS|BASH_ENV|ENV|TAG|RESTORE|DOCKER_HOST|DOCKER_CONFIG|DOCKER_CONTEXT|LD_*) fail "Secret name '$name' is reserved" ;;
-            esac
-            case "$lower" in
-              github_*|runner_*) fail "Secret name '$name' is reserved" ;;
+              PATH|HOME|SHELL|IFS|BASH_ENV|ENV|TAG|TARGET|RESTORE|ENV_SECRETS|SECRETS_JSON|MAKE*|MFLAGS|DOCKER_HOST|DOCKER_CONFIG|DOCKER_CONTEXT|LD_*|GITHUB_*|RUNNER_*)
+                fail "Secret name '$name' is reserved" ;;
             esac
             jq -e --arg n "$name" 'has($n)' <<<"$SECRETS_JSON" >/dev/null || fail "Secret '$name' listed in env-secrets does not exist"
           done
@@ -178,7 +175,7 @@ jobs:
           INSECURE: ${{ inputs.e2e-local-target && 'true' || '' }}
         run: |
           set -euo pipefail
-          read -ra refs <<<"$IMAGES"
+          read -r -d '' -a refs <<<"$IMAGES" || true
           missing=0
           for ref in "${refs[@]}"; do
             if timeout 60 docker manifest inspect ${INSECURE:+--insecure} "$ref:$TAG" >/dev/null 2>&1; then
@@ -244,9 +241,9 @@ jobs:
             ControlPersist 10m
           EOF_SSH
 
-          echo "DOCKER_HOST=ssh://$SERVER_USERNAME@$SERVER_HOST:$SERVER_PORT" >> "$GITHUB_ENV"
           ssh -l "$SERVER_USERNAME" -p "$SERVER_PORT" -- "$SERVER_HOST" true \
             || fail "SSH connection to the server failed (unreachable, key refused or host key mismatch)"
+          echo "DOCKER_HOST=ssh://$SERVER_USERNAME@$SERVER_HOST:$SERVER_PORT" >> "$GITHUB_ENV"
 
       - name: Run make
         working-directory: ${{ inputs.working-directory }}
@@ -255,7 +252,7 @@ jobs:
           SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] values are read only for the names listed in env-secrets, then unset before make runs
         run: |
           set -euo pipefail
-          read -ra names <<<"$ENV_SECRETS"
+          read -r -d '' -a names <<<"$ENV_SECRETS" || true
           for name in "${names[@]}"; do
             value=$(jq -er --arg n "$name" '.[$n] | select(type == "string")' <<<"$SECRETS_JSON")
             while IFS= read -r line; do
@@ -266,11 +263,14 @@ jobs:
           unset SECRETS_JSON ENV_SECRETS value
 
           rc=0
-          make "$TARGET" || rc=$?
+          make "$TARGET" TAG="$TAG" || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::error::make $TARGET failed (exit $rc)"
-            if make -n deploy.recover >/dev/null 2>&1; then
+            database=$(make -pRrq : 2>/dev/null || true)
+            if grep -q '^deploy\.recover:' <<<"$database"; then
               make deploy.recover || echo "::warning::make deploy.recover failed"
+            else
+              echo "::notice::deploy.recover is not defined, skipping recovery"
             fi
             exit 1
           fi

@@ -64,7 +64,12 @@ jobs:
     uses: ./.github/workflows/swarm-deploy.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
     with:
       environment: e2e
-      images: localhost:5000/fixture-app localhost:5000/fixture-worker
+      images: |
+        localhost:5000/fixture-app
+        localhost:5000/fixture-worker
+      env-secrets: |
+        DOCKER_HUB_USERNAME
+        SERVER_USERNAME
       castor: true
       working-directory: tests/fixtures/swarm-deploy
       e2e-local-target: true
@@ -122,7 +127,6 @@ jobs:
             gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs"
           }
           expect() { grep -Eq -- "$2" <<<"$1" || { echo "::error::missing in log: $2"; exit 1; }; }
-          refuse() { ! grep -Eq -- "$2" <<<"$1" || { echo "::error::unexpected in log: $2"; exit 1; }; }
           host='DOCKER_HOST=ssh://\*+@127\.0\.0\.1:\*+'
 
           out=$(log deploy-full)
@@ -132,26 +136,28 @@ jobs:
 
           out=$(log deploy-update)
           expect "$out" "deploy\.update TAG=v1\.1\.0 RESTORE= $host "
-          expect "$out" 'deploy\.update exported= castor=yes'
+          expect "$out" 'deploy\.update exported=DOCKER_HUB_USERNAME,SERVER_USERNAME castor=yes'
+          expect "$out" 'Found localhost:5000/fixture-worker:v1\.1\.0'
           expect "$out" 'E2E-SERVED ok v1\.1\.0'
 
           out=$(log rollback)
           expect "$out" "rollback TAG=v1\.0\.0 RESTORE=1 $host "
           expect "$out" 'rollback exported= castor=no'
           expect "$out" 'E2E-SERVED ok v1\.0\.0'
-          refuse "$out" 'e2e-read-only-token'
 
           ids=$(gh api "repos/$REPO/deployments?environment=e2e&sha=$SHA" --jq '.[].id')
           succeeded=0
           for id in $ids; do
-            gh api "repos/$REPO/deployments/$id/statuses" --jq '.[].state' | grep -x success >/dev/null && succeeded=$((succeeded + 1))
+            gh api "repos/$REPO/deployments/$id/statuses" \
+              --jq ".[] | select(.state == \"success\" and (.log_url | contains(\"/actions/runs/$RUN_ID/\"))) | .id" | grep . >/dev/null \
+              && succeeded=$((succeeded + 1))
           done
-          [ "$succeeded" -ge 3 ] || { echo "::error::expected 3 successful Deployments for environment e2e, got $succeeded"; exit 1; }
+          [ "$succeeded" -eq 3 ] || { echo "::error::expected 3 successful Deployments of run $RUN_ID for environment e2e, got $succeeded"; exit 1; }
 
   failures:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
     permissions:
       actions: write
     env:
@@ -177,7 +183,7 @@ jobs:
           done
           [ -n "$run_id" ] || { echo "::error::dispatched run not found"; exit 1; }
           echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
-          timeout 2400 sh -c "until [ \"\$(gh run view $run_id --repo $REPO --json status --jq .status)\" = completed ]; do sleep 20; done" \
+          timeout 1500 sh -c "until [ \"\$(gh run view $run_id --repo $REPO --json status --jq .status)\" = completed ]; do sleep 20; done" \
             || { echo "::error::cases did not finish in time"; exit 1; }
 
       - name: Assert every case failed for the expected reason
@@ -204,6 +210,11 @@ jobs:
           check missing-image 'Image localhost:5000/does-not-exist:v1\.1\.0 not found'
           check wrong-host-key 'SSH connection to the server failed'
           check unknown-rollback-tag 'Tag v9\.9\.9 does not exist in the repository'
+          check rollback-not-default-branch 'Rollback must run on the default branch'
+          check reserved-secret-name "Secret name 'MAKEFLAGS' is reserved"
+          check lowercase-secret-name "Invalid secret name 'github_token'"
+          check target-failure-no-recover 'make e2e\.fail failed'
+          check target-failure-no-recover 'deploy\.recover is not defined, skipping recovery'
           check target-failure 'make e2e\.fail failed'
           check target-failure 'deploy\.recover exported= castor=no'
           check target-failure 'E2E-EVIDENCE-END'

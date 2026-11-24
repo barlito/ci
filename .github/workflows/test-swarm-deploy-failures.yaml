@@ -202,3 +202,89 @@ jobs:
       DOCKER_HUB_USERNAME: e2e-user
       DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
       e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
+
+  rollback-not-default-branch:
+    needs: [keys, target-failure]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/swarm-rollback.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
+    with:
+      environment: e2e-failures
+      working-directory: tests/fixtures/swarm-deploy
+      tag: v1.0.0
+    secrets:
+      SERVER_USERNAME: runner
+      SERVER_PORT: "2222"
+      SERVER_HOST_KEY: ${{ needs.keys.outputs.host-key-line }}
+      SSH_PRIVATE_KEY: ${{ needs.keys.outputs.client-key }}
+      DOCKER_HUB_USERNAME: e2e-user
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
+      e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
+
+  reserved-secret-name:
+    needs: [keys, rollback-not-default-branch]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/swarm-deploy.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
+    with:
+      environment: e2e-failures
+      working-directory: tests/fixtures/swarm-deploy
+      e2e-local-target: true
+      e2e-tag: v1.1.0
+      env-secrets: MAKEFLAGS
+    secrets:
+      SERVER_USERNAME: runner
+      SERVER_PORT: "2222"
+      SERVER_HOST_KEY: ${{ needs.keys.outputs.host-key-line }}
+      SSH_PRIVATE_KEY: ${{ needs.keys.outputs.client-key }}
+      DOCKER_HUB_USERNAME: e2e-user
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
+      e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
+
+  lowercase-secret-name:
+    needs: [keys, reserved-secret-name]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/swarm-deploy.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
+    with:
+      environment: e2e-failures
+      working-directory: tests/fixtures/swarm-deploy
+      e2e-local-target: true
+      e2e-tag: v1.1.0
+      env-secrets: github_token
+    secrets:
+      SERVER_USERNAME: runner
+      SERVER_PORT: "2222"
+      SERVER_HOST_KEY: ${{ needs.keys.outputs.host-key-line }}
+      SSH_PRIVATE_KEY: ${{ needs.keys.outputs.client-key }}
+      DOCKER_HUB_USERNAME: e2e-user
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
+      e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
+
+  target-failure-no-recover:
+    needs: [keys, lowercase-secret-name]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      deployments: write
+    uses: ./.github/workflows/swarm-deploy.yaml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects the $/ syntax
+    with:
+      environment: e2e-failures
+      working-directory: tests/fixtures/swarm-deploy-norecover
+      e2e-local-target: true
+      e2e-tag: v1.1.0
+      target: e2e.fail
+    secrets:
+      SERVER_USERNAME: runner
+      SERVER_PORT: "2222"
+      SERVER_HOST_KEY: ${{ needs.keys.outputs.host-key-line }}
+      SSH_PRIVATE_KEY: ${{ needs.keys.outputs.client-key }}
+      DOCKER_HUB_USERNAME: e2e-user
+      DOCKER_HUB_READ_ONLY_ACCESS_TOKEN: e2e-read-only-token
+      e2e-ssh-host-key: ${{ needs.keys.outputs.sshd-host-key }}
