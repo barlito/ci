@@ -118,7 +118,7 @@ jobs:
           set -euo pipefail
           log() {
             id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate --jq ".jobs[] | select(.name | startswith(\"$1 /\")) | .id" | head -n1)
-            gh api "repos/$REPO/actions/jobs/$id/logs"
+            gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs"
           }
           expect() { grep -Eq -- "$2" <<<"$1" || { echo "::error::missing in log: $2"; exit 1; }; }
           refuse() { ! grep -Eq -- "$2" <<<"$1" || { echo "::error::unexpected in log: $2"; exit 1; }; }
@@ -189,7 +189,7 @@ jobs:
             row=$(jq -r --arg c "$case" '.jobs[] | select(.name | startswith($c + " /")) | "\(.id) \(.conclusion)"' <<<"$jobs" | head -n1)
             id=${row%% *}; conclusion=${row##* }
             if [ "$conclusion" != failure ]; then echo "::error::$case concluded '$conclusion', expected failure"; status=1; return; fi
-            if ! gh api "repos/$REPO/actions/jobs/$id/logs" | grep -Eq -- "$pattern"; then
+            if ! gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs" | grep -Eq -- "$pattern"; then
               echo "::error::$case log lacks: $pattern"; status=1; return
             fi
             echo "ok: $case"
