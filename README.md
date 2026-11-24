@@ -40,10 +40,12 @@ Prerequisites:
 | `deploy.prod` | yes | `swarm-deploy` (`full: true`) | Full `docker stack deploy`, idempotent, creates the stack on first deploy, never `stack rm`, fails if not converged |
 | `deploy.update` | yes (may alias `deploy.prod` for a simple stack) | `swarm-deploy` (`full: false`) | Rolling image update: backup, drain, update, migrate, assert, smoke, prune as needed |
 | `rollback` | if `swarm-rollback` is used | `swarm-rollback` | `TAG=` required, `RESTORE=` optional |
-| `deploy.recover` | no | `swarm-deploy` on failure | Restore a sane state (rescale workers...); skipped if missing |
+| `deploy.recover` | no | `swarm-deploy` and `swarm-rollback` when make fails, times out or is cancelled | Restore a sane state (rescale workers...); skipped if missing |
 | `deploy.ci`, `docker.undeploy.ci` | PHP | `php-ci` | CI stack |
 
-Environment guaranteed to make: `DOCKER_HOST=ssh://...`, `TAG`, and the secrets listed in the `env-secrets` input.
+Environment guaranteed to make (including `deploy.recover`): `DOCKER_HOST=ssh://...`, `TAG`, `RESTORE` (`swarm-rollback` only, possibly empty), and the secrets listed in the `env-secrets` input.
+
+Only secrets are exported to make, never variables: a value make needs (a host name for example) must be a secret listed in `env-secrets`. The allowlist is an export hygiene guarantee, not isolation: make runs in the same process tree as the job, which received every inherited secret.
 
 `deploy.update` does not reapply environment variables nor networks: use a `full` deploy when they change.
 
@@ -59,7 +61,11 @@ Set on the `production` environment of the consumer repository (repository level
 | secret | `SERVER_USERNAME`, `SERVER_PORT` | deploy, rollback |
 | secret | `SERVER_HOST_KEY` (a `known_hosts` line of the server ed25519 key) | deploy, rollback |
 | secret | `SSH_PRIVATE_KEY` | deploy, rollback |
-| secret | `DOCKER_HUB_USERNAME`, `DOCKER_HUB_READ_ONLY_ACCESS_TOKEN` | deploy, rollback, php-ci |
+| secret | `DOCKER_HUB_USERNAME`, `DOCKER_HUB_READ_ONLY_ACCESS_TOKEN` | deploy, rollback (always logged in, even with `images: ""`), php-ci |
+
+`php-ci` has no environment: its `DOCKER_HUB_*` secrets must be set at repository level, otherwise the login is skipped.
+
+The `production` environment deployment branch rule must allow the `v*` tags (deploy) and the default branch (rollback).
 
 The release job has no environment: set `DOCKER_HUB_USERNAME` and `DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN` at repository level for `docker-release`.
 
@@ -71,7 +77,7 @@ All of them take `secrets: inherit`; only the secrets named above are read.
 
 ### docker-release
 
-Builds and pushes one image per target, tagged with the release tag. `latest` moves only for the highest stable tag of the repository.
+Builds and pushes one image per target, tagged with the release tag. `latest` moves only for the highest stable tag of the repository, decided again right before it is moved. Runs are serialized per tag, so concurrent releases of different tags are all built.
 
 | Input | Default | |
 |---|---|---|
@@ -108,7 +114,7 @@ jobs:
 
 ### swarm-deploy
 
-Validates the tag and the images, opens an SSH connection to the server and runs `make deploy.update` (or `make deploy.prod` with `full: true`), then `make deploy.recover` on failure.
+Validates the tag and the images, opens an SSH connection to the server and runs `make deploy.update` (or `make deploy.prod` with `full: true`), then `make deploy.recover` in its own step when make fails, times out or is cancelled. `timeout-minutes` bounds the make step, the recovery step has its own 5 minutes.
 
 | Input | Default | |
 |---|---|---|
@@ -121,7 +127,7 @@ Validates the tag and the images, opens an SSH connection to the server and runs
 | `working-directory` | `.` | Directory where make runs |
 | `target` | | Overrides the make target |
 | `require-tag` | `true` | `false` only accepted without images |
-| `timeout-minutes` | `20` | |
+| `timeout-minutes` | `20` | Timeout of the make step |
 
 ```yaml
 name: deploy
@@ -189,7 +195,7 @@ jobs:
 
 ### image-scan
 
-Builds an image and scans it with Trivy. Findings go to code scanning (SARIF) on public repositories and to the job summary on private ones.
+Builds an image and scans it with Trivy. Findings go to code scanning (SARIF) on public repositories, and to the job summary and log.
 
 | Input | Default | |
 |---|---|---|
@@ -198,11 +204,12 @@ Builds an image and scans it with Trivy. Findings go to code scanning (SARIF) on
 | `context` | `.` | |
 | `severity` | `CRITICAL,HIGH` | |
 | `ignore-unfixed` | `true` | |
+| `trivyignore` | `.trivyignore` | Ignore file relative to the repository root, honored when it exists (the path with `.yaml` appended is also tried) |
 | `fail-on-findings` | `false` | |
 
 ### docker-check
 
-Builds the given targets without pushing and validates the compose files.
+Builds the given targets without pushing and validates each compose file on its own: override files that only make sense merged need `docker stack config -c a -c b` in the caller.
 
 | Input | Default | |
 |---|---|---|
