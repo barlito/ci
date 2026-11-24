@@ -118,6 +118,7 @@ jobs:
           set -euo pipefail
           log() {
             id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate --jq ".jobs[] | select(.name | startswith(\"$1 /\")) | .id" | head -n1)
+            [ -n "$id" ] || { echo "::error::job $1 not found" >&2; exit 1; }
             gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs"
           }
           expect() { grep -Eq -- "$2" <<<"$1" || { echo "::error::missing in log: $2"; exit 1; }; }
@@ -147,7 +148,7 @@ jobs:
           done | grep -qx success || { echo "::error::no successful Deployment status"; exit 1; }
 
   failures:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -187,6 +188,7 @@ jobs:
             local case=$1 pattern=$2
             local row id conclusion
             row=$(jq -r --arg c "$case" '.jobs[] | select(.name | startswith($c + " /")) | "\(.id) \(.conclusion)"' <<<"$jobs" | head -n1)
+            [ -n "$row" ] || { echo "::error::$case: job not found in run $RUN_ID"; status=1; return; }
             id=${row%% *}; conclusion=${row##* }
             if [ "$conclusion" != failure ]; then echo "::error::$case concluded '$conclusion', expected failure"; status=1; return; fi
             if ! gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs" | grep -Eq -- "$pattern"; then

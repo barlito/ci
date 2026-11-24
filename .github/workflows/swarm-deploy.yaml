@@ -152,6 +152,7 @@ jobs:
           submodules: ${{ inputs.submodules }}
 
       - name: Start the e2e local target
+        id: e2e
         if: inputs.e2e-local-target
         env:
           E2E_SSHD_HOST_KEY: ${{ secrets.e2e-ssh-host-key }}
@@ -174,12 +175,13 @@ jobs:
         if: inputs.images != ''
         env:
           IMAGES: ${{ inputs.images }}
+          INSECURE: ${{ inputs.e2e-local-target && 'true' || '' }}
         run: |
           set -euo pipefail
           read -ra refs <<<"$IMAGES"
           missing=0
           for ref in "${refs[@]}"; do
-            if timeout 60 docker manifest inspect "$ref:$TAG" >/dev/null 2>&1; then
+            if timeout 60 docker manifest inspect ${INSECURE:+--insecure} "$ref:$TAG" >/dev/null 2>&1; then
               echo "Found $ref:$TAG"
             else
               echo "::error::Image $ref:$TAG not found"
@@ -274,7 +276,7 @@ jobs:
           fi
 
       - name: Print e2e evidence
-        if: always() && inputs.e2e-local-target
+        if: always() && steps.e2e.outcome == 'success'
         working-directory: ${{ inputs.working-directory }}
         run: |
           "$GITHUB_WORKSPACE/tests/fixtures/swarm-deploy/e2e-local-target.sh" evidence

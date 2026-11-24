@@ -21,7 +21,7 @@ setup() {
     sudo mkdir -p /run/sshd
     sudo /usr/sbin/sshd -f /dev/null -p "$SERVER_PORT" -h /etc/ssh/e2e_host_key \
         -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no -o UsePAM=no \
-        -o AllowUsers="$(id -un)" -o PidFile=/run/e2e-sshd.pid
+        -o AllowUsers="$(id -un)" -o StrictModes=no -o PidFile=/run/e2e-sshd.pid -E /tmp/e2e-sshd.log -o LogLevel=DEBUG1
 
     cd "$workspace"
     for version in v1.0.0 v1.1.0; do
@@ -49,6 +49,7 @@ evidence() {
     echo "E2E-EVIDENCE-BEGIN"
     cat trace.log 2>/dev/null || true
     echo "E2E-SERVED $(timeout 20 make -s -C "$app" fixture.http URL_PATH=health 2>&1 || echo unavailable)"
+    sudo tail -n 15 /tmp/e2e-sshd.log || true
     echo "E2E-EVIDENCE-END"
 }
 
