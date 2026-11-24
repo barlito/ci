@@ -142,10 +142,11 @@ jobs:
           refuse "$out" 'e2e-read-only-token'
 
           ids=$(gh api "repos/$REPO/deployments?environment=e2e&sha=$SHA" --jq '.[].id')
-          [ -n "$ids" ] || { echo "::error::no Deployment for environment e2e"; exit 1; }
+          succeeded=0
           for id in $ids; do
-            gh api "repos/$REPO/deployments/$id/statuses" --jq '.[0].state'
-          done | grep -qx success || { echo "::error::no successful Deployment status"; exit 1; }
+            gh api "repos/$REPO/deployments/$id/statuses" --jq '.[].state' | grep -qx success && succeeded=$((succeeded + 1))
+          done
+          [ "$succeeded" -ge 3 ] || { echo "::error::expected 3 successful Deployments for environment e2e, got $succeeded"; exit 1; }
 
   failures:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
