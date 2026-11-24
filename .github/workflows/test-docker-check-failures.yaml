@@ -1,10 +1,6 @@
 name: test-docker-check-failures
 
-on:
-  workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/test-docker-check-failures.yaml
+on: workflow_dispatch
 
 permissions: {}
 

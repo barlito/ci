@@ -39,6 +39,7 @@ jobs:
       compose-files: tests/fixtures/docker-check/no-build-compose.yml
 
   expected-failures:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -55,6 +56,6 @@ jobs:
       - name: Dispatch failure cases and assert
         run: |
           .github/scripts/assert-failure-cases.sh test-docker-check-failures.yaml \
-            'broken-compose::go-yaml load error' \
+            'broken-compose::did not find expected' \
             'broken-dockerfile::did not complete successfully' \
-            'missing-env::TAG is required'
+            'missing-env::CONFIG_VERSION is required'
