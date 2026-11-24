@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: docker-release-${{ github.repository }}${{ inputs.e2e-tag && format('-{0}', inputs.e2e-tag) || '' }}
+      group: docker-release-${{ github.repository }}-${{ inputs.e2e-tag || github.ref_name }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -87,9 +87,12 @@ jobs:
           IMAGES: ${{ inputs.images }}
           CACHE: ${{ inputs.cache }}
           E2E_EXTRA_TAGS: ${{ inputs.e2e-extra-tags }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ -n "$E2E_TAG$E2E_EXTRA_TAGS" ] && [ "$GITHUB_REPOSITORY" != barlito/ci ]; then
+            echo "::error::e2e-tag and e2e-extra-tags are reserved for the tests of barlito/ci"
+            exit 1
+          fi
           if [ -n "$E2E_TAG" ]; then
             tag="$E2E_TAG"
           elif [ "$REF_TYPE" = tag ]; then
@@ -115,19 +118,12 @@ jobs:
             echo '::error::Input images must have unique targets, the digests output is keyed by target'
             exit 1
           fi
-          latest=false
+          stable=false
           if [[ "$tag" != *-* ]] && [ "$RELEASE_PRERELEASE" != true ]; then
-            stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
-            repo_tags=$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
-            highest=$(printf '%s\n%s\n' "$repo_tags" "$tag $E2E_EXTRA_TAGS" | tr ' ' '\n' | grep -E "$stable" | sort -V | tail -n 1)
-            if [ "$highest" = "$tag" ]; then
-              latest=true
-            else
-              echo "::notice::Tag $tag is not the highest stable tag ($highest), latest is not moved"
-            fi
+            stable=true
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "stable=$stable" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -171,7 +167,6 @@ jobs:
           SBOM: ${{ inputs.sbom }}
           PROVENANCE: ${{ inputs.provenance }}
           TAG: ${{ steps.guard.outputs.tag }}
-          LATEST: ${{ steps.guard.outputs.latest }}
         run: |
           set -euo pipefail
           cache_ref="ghcr.io/${GITHUB_REPOSITORY,,}:buildcache"
@@ -193,7 +188,6 @@ jobs:
             esac
             ref="$REGISTRY/$name"
             tags=(--tag "$ref:$TAG")
-            if [ "$LATEST" = true ]; then tags+=(--tag "$ref:latest"); fi
 
             cache_flags=()
             case "$CACHE" in
@@ -215,3 +209,28 @@ jobs:
           done < <(jq -r '.[] | [.name, .target] | @tsv' <<<"$IMAGES")
 
           echo "digests=$digests" >> "$GITHUB_OUTPUT"
+
+      - name: Move latest to the highest stable tag
+        if: steps.guard.outputs.stable == 'true'
+        env:
+          IMAGES: ${{ inputs.images }}
+          NAMESPACE: ${{ inputs.namespace }}
+          REGISTRY: ${{ inputs.registry }}
+          TAG: ${{ steps.guard.outputs.tag }}
+          E2E_EXTRA_TAGS: ${{ inputs.e2e-extra-tags }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo_tags=$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
+          highest=$(printf '%s\n%s\n' "$repo_tags" "$TAG $E2E_EXTRA_TAGS" | tr ' ' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [ "$highest" != "$TAG" ]; then
+            echo "::notice::Tag $TAG is not the highest stable tag ($highest), latest is not moved"
+            exit 0
+          fi
+          while IFS= read -r name; do
+            case "$name" in
+              */*) ;;
+              *) name="$NAMESPACE/$name" ;;
+            esac
+            docker buildx imagetools create --tag "$REGISTRY/$name:latest" "$REGISTRY/$name:$TAG"
+          done < <(jq -r '.[].name' <<<"$IMAGES")
