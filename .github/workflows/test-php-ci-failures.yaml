@@ -5,8 +5,20 @@ on: workflow_dispatch
 permissions: {}
 
 jobs:
-  placeholder:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: echo "Registers the workflow on the default branch; cases live on the dispatched branch."
+  failing-check:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/php-ci.yaml # zizmor: ignore[self-repository] actionlint rejects the $/ syntax
+    with:
+      working-directory: tests/fixtures/php-ci
+      checks: check.fail check.ok
+      tests: test.ok
+
+  failing-test:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/php-ci.yaml # zizmor: ignore[self-repository] actionlint rejects the $/ syntax
+    with:
+      working-directory: tests/fixtures/php-ci
+      checks: check.ok
+      tests: test.fail test.ok
