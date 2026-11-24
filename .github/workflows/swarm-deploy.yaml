@@ -40,6 +40,7 @@ on:
         type: boolean
         default: true
       timeout-minutes:
+        description: Timeout of the make step, the job itself only has the 360 minutes backstop, so deploy.recover still runs
         type: number
         default: 20
       e2e-local-target:
@@ -72,7 +73,7 @@ permissions: {}
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    timeout-minutes: 360
     environment: ${{ inputs.environment }}
     concurrency:
       group: deploy-${{ inputs.environment }}
@@ -246,6 +247,8 @@ jobs:
           echo "DOCKER_HOST=ssh://$SERVER_USERNAME@$SERVER_HOST:$SERVER_PORT" >> "$GITHUB_ENV"
 
       - name: Run make
+        id: make
+        timeout-minutes: ${{ inputs.timeout-minutes }}
         working-directory: ${{ inputs.working-directory }}
         env:
           ENV_SECRETS: ${{ inputs.env-secrets }}
@@ -262,17 +265,33 @@ jobs:
           done
           unset SECRETS_JSON ENV_SECRETS value
 
-          rc=0
-          make "$TARGET" TAG="$TAG" || rc=$?
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::make $TARGET failed (exit $rc)"
-            database=$(make -pRrq : 2>/dev/null || true)
-            if grep -q '^deploy\.recover:' <<<"$database"; then
-              make deploy.recover || echo "::warning::make deploy.recover failed"
-            else
-              echo "::notice::deploy.recover is not defined, skipping recovery"
-            fi
-            exit 1
+          make "$TARGET" TAG="$TAG"
+
+      - name: Run make deploy.recover on failure
+        if: always() && (steps.make.outcome == 'failure' || steps.make.outcome == 'cancelled')
+        timeout-minutes: 5
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          ENV_SECRETS: ${{ inputs.env-secrets }}
+          SECRETS_JSON: ${{ toJSON(secrets) }} # zizmor: ignore[overprovisioned-secrets] values are read only for the names listed in env-secrets, then unset before make runs
+        run: |
+          set -euo pipefail
+          read -r -d '' -a names <<<"$ENV_SECRETS" || true
+          for name in "${names[@]}"; do
+            value=$(jq -er --arg n "$name" '.[$n] | select(type == "string")' <<<"$SECRETS_JSON")
+            while IFS= read -r line; do
+              [ -z "$line" ] || echo "::add-mask::$line"
+            done <<<"$value"
+            export "$name=$value"
+          done
+          unset SECRETS_JSON ENV_SECRETS value
+
+          echo "::error::make $TARGET failed or was interrupted (timeout or cancellation)"
+          database=$(make -pRrq : 2>/dev/null || true)
+          if grep -q '^deploy\.recover:' <<<"$database"; then
+            make deploy.recover || { echo "::error::make deploy.recover failed"; exit 1; }
+          else
+            echo "::notice::deploy.recover is not defined, skipping recovery"
           fi
 
       - name: Print e2e evidence

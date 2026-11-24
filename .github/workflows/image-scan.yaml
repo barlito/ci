@@ -23,6 +23,10 @@ on:
         description: Ignore vulnerabilities without a fix
         type: boolean
         default: true
+      trivyignore:
+        description: Trivy ignore file relative to the repository root, used when it exists (the same path with .yaml appended is also looked up)
+        type: string
+        default: .trivyignore
       fail-on-findings:
         description: Fail the job when findings are reported
         type: boolean
@@ -48,6 +52,7 @@ jobs:
       SEVERITY: ${{ inputs.severity }}
       IGNORE_UNFIXED: ${{ inputs.ignore-unfixed }}
       FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+      TRIVYIGNORE: ${{ inputs.trivyignore }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,7 +76,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/trivy-cache"
           args=(--scanners vuln --severity "$SEVERITY" --format sarif --output /out/trivy.sarif)
           if [ "$IGNORE_UNFIXED" = "true" ]; then args+=(--ignore-unfixed); fi
-          docker run --rm \
+          [[ "$TRIVYIGNORE" != /* && "$TRIVYIGNORE" != *..* ]] || { echo "::error::trivyignore must be a path inside the repository"; exit 1; }
+          mounts=()
+          for candidate in "$TRIVYIGNORE" "$TRIVYIGNORE.yaml"; do
+            if [ -f "$candidate" ] && [ ! -L "$candidate" ]; then
+              echo "Using ignore file $candidate"
+              mounts=(-v "$PWD/$candidate:/ignore/$(basename "$candidate"):ro")
+              args+=(--ignorefile "/ignore/$(basename "$candidate")")
+              break
+            fi
+          done
+          docker run --rm "${mounts[@]}" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD:/out" \
             -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
@@ -83,6 +98,13 @@ jobs:
         run: |
           count=$(jq '[.runs[].results[]?] | length' trivy.sarif)
           echo "count=$count" >> "$GITHUB_OUTPUT"
+          table=""
+          if [ "$count" -gt 0 ]; then
+            table=$(jq -r '.runs[].results[]? | .ruleId as $id | .message.text as $t
+                | "| \($id) | \(try ($t | capture("Package: (?<v>[^\n]*)").v) catch "") | \(try ($t | capture("Severity: (?<v>[^\n]*)").v) catch "") | \(try ($t | capture("Fixed Version: (?<v>[^\n]*)").v) catch "") |"' trivy.sarif)
+            echo "Trivy: $count finding(s) at severity $SEVERITY"
+            printf '%s\n' "$table"
+          fi
           {
             echo "## Trivy: $DOCKERFILE ${TARGET:+(target $TARGET)}"
             echo
@@ -91,8 +113,7 @@ jobs:
               echo
               echo "| Vulnerability | Package | Severity | Fixed version |"
               echo "|---|---|---|---|"
-              jq -r '.runs[].results[]? | .ruleId as $id | .message.text as $t
-                | "| \($id) | \(try ($t | capture("Package: (?<v>[^\n]*)").v) catch "") | \(try ($t | capture("Severity: (?<v>[^\n]*)").v) catch "") | \(try ($t | capture("Fixed Version: (?<v>[^\n]*)").v) catch "") |"' trivy.sarif
+              printf '%s\n' "$table"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -36,6 +36,17 @@ jobs:
       dockerfile: tests/fixtures/image-scan/vulnerable/Dockerfile
       context: tests/fixtures/image-scan/vulnerable
 
+  vulnerable-ignored:
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/image-scan.yaml # zizmor: ignore[self-repository]
+    with:
+      dockerfile: tests/fixtures/image-scan/vulnerable/Dockerfile
+      context: tests/fixtures/image-scan/vulnerable
+      trivyignore: tests/fixtures/image-scan/trivyignore
+      fail-on-findings: true
+
   vulnerable-fails:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
@@ -52,4 +63,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Dispatch failure cases and assert
-        run: .github/scripts/assert-failure-cases.sh test-image-scan-failures.yaml 3300 'findings-fail::Trivy reported'
+        run: .github/scripts/assert-failure-cases.sh test-image-scan-failures.yaml 3300 'findings-fail::Trivy reported' 'findings-fail::| CVE-2022-37434 |'
