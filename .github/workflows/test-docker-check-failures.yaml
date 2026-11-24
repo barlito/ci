@@ -1,6 +1,10 @@
 name: test-docker-check-failures
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/never-triggered
 
 permissions: {}
 
