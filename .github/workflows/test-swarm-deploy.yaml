@@ -144,7 +144,7 @@ jobs:
           ids=$(gh api "repos/$REPO/deployments?environment=e2e&sha=$SHA" --jq '.[].id')
           succeeded=0
           for id in $ids; do
-            gh api "repos/$REPO/deployments/$id/statuses" --jq '.[].state' | grep -qx success && succeeded=$((succeeded + 1))
+            gh api "repos/$REPO/deployments/$id/statuses" --jq '.[].state' | grep -x success >/dev/null && succeeded=$((succeeded + 1))
           done
           [ "$succeeded" -ge 3 ] || { echo "::error::expected 3 successful Deployments for environment e2e, got $succeeded"; exit 1; }
 
