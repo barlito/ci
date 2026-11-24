@@ -18,6 +18,8 @@ setup() {
     printf '%s\n' "$SSH_PRIVATE_KEY" > "$tmp/client_key"
     install -d -m 700 "$HOME/.ssh"
     ssh-keygen -y -f "$tmp/client_key" >> "$HOME/.ssh/authorized_keys"
+    # sshd refuses locked accounts when PAM is off
+    sudo usermod -p '*' "$(id -un)"
     sudo mkdir -p /run/sshd
     sudo /usr/sbin/sshd -f /dev/null -p "$SERVER_PORT" -h /etc/ssh/e2e_host_key \
         -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no -o UsePAM=no \
