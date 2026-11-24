@@ -1,0 +1,160 @@
+name: test-docker-release
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/docker-release.yaml
+      - .github/workflows/test-docker-release.yaml
+      - .github/workflows/test-docker-release-failures.yaml
+
+permissions: {}
+
+concurrency:
+  group: test-docker-release
+  cancel-in-progress: false
+
+jobs:
+  release-stable:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-release.yaml  # zizmor: ignore[self-repository]
+    with:
+      images: '[{"name":"barlito/ci-test-app","target":"app"},{"name":"barlito/ci-test-worker","target":"worker"}]'
+      context: tests/fixtures/app
+      registry: ghcr.io
+      e2e-tag: v0.0.${{ github.run_id }}
+    secrets:
+      registry-username: ${{ github.actor }}
+      registry-token: ${{ github.token }}
+
+  release-prerelease:
+    needs: release-stable
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-release.yaml  # zizmor: ignore[self-repository]
+    with:
+      images: '[{"name":"barlito/ci-test-app","target":"app"},{"name":"barlito/ci-test-worker","target":"worker"}]'
+      context: tests/fixtures/app
+      registry: ghcr.io
+      e2e-tag: v0.0.0-e2e.${{ github.run_id }}
+    secrets:
+      registry-username: ${{ github.actor }}
+      registry-token: ${{ github.token }}
+
+  assert-release:
+    needs: [release-stable, release-prerelease]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      packages: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      STABLE_TAG: ${{ needs.release-stable.outputs.tag }}
+      STABLE_DIGESTS: ${{ needs.release-stable.outputs.digests }}
+      PRE_TAG: ${{ needs.release-prerelease.outputs.tag }}
+      PRE_DIGESTS: ${{ needs.release-prerelease.outputs.digests }}
+      EXPECTED_STABLE_TAG: v0.0.${{ github.run_id }}
+      EXPECTED_PRE_TAG: v0.0.0-e2e.${{ github.run_id }}
+      EXPECTED_SHA: ${{ github.sha }}
+      CACHE_REF: ghcr.io/barlito/ci:buildcache
+    steps:
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Tags, digests, labels and baked version
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          [ "$STABLE_TAG" = "$EXPECTED_STABLE_TAG" ] || fail "stable tag output is $STABLE_TAG"
+          [ "$PRE_TAG" = "$EXPECTED_PRE_TAG" ] || fail "prerelease tag output is $PRE_TAG"
+
+          digest_of() { timeout 60 docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1"; }
+          check_image() {
+            local name="$1" stable_digest pre_digest ref="ghcr.io/$1"
+            stable_digest=$(jq -er --arg n "$name" '.[$n]' <<<"$STABLE_DIGESTS")
+            pre_digest=$(jq -er --arg n "$name" '.[$n]' <<<"$PRE_DIGESTS")
+            [ "$(digest_of "$ref:$STABLE_TAG")" = "$stable_digest" ] || fail "$name: stable digest mismatch"
+            [ "$(digest_of "$ref:$PRE_TAG")" = "$pre_digest" ] || fail "$name: prerelease digest mismatch"
+            [ "$(digest_of "$ref:latest")" = "$stable_digest" ] || fail "$name: latest must point to the stable release"
+            [ "$stable_digest" != "$pre_digest" ] || fail "$name: stable and prerelease digests are equal"
+
+            for tag in "$STABLE_TAG" "$PRE_TAG"; do
+              timeout 120 docker pull -q "$ref:$tag" >/dev/null
+              labels=$(docker inspect --format '{{json .Config.Labels}}' "$ref:$tag")
+              [ "$(jq -r '."org.opencontainers.image.version"' <<<"$labels")" = "$tag" ] || fail "$name:$tag: bad version label"
+              [ "$(jq -r '."org.opencontainers.image.revision"' <<<"$labels")" = "$EXPECTED_SHA" ] || fail "$name:$tag: bad revision label"
+              [ "$(jq -r '."org.opencontainers.image.source"' <<<"$labels")" = "https://github.com/$GH_REPO" ] || fail "$name:$tag: bad source label"
+            done
+          }
+          check_image barlito/ci-test-app
+          check_image barlito/ci-test-worker
+
+          [ "$(docker run --rm --entrypoint cat "ghcr.io/barlito/ci-test-app:$STABLE_TAG" /www/health)" = "ok $STABLE_TAG" ] || fail "APP_VERSION not baked in"
+          [ "$(docker run --rm --entrypoint cat "ghcr.io/barlito/ci-test-app:$PRE_TAG" /www/health)" = "ok $PRE_TAG" ] || fail "APP_VERSION not baked in the prerelease"
+
+      - name: Build cache is written by the first image and read by the others
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          for prefix in release-stable release-prerelease; do
+            job_id=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+              --jq ".jobs[] | select(.name | startswith(\"$prefix\")) | .id")
+            timeout 60 gh api "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/$prefix.log"
+            for image in app worker; do
+              awk -v m="build-image[barlito/ci-test-$image]" '/build-image\[/ { cur = index($0, m) > 0 } cur' \
+                "$RUNNER_TEMP/$prefix.log" > "$RUNNER_TEMP/$prefix-$image.log"
+              grep -Fq "importing cache manifest from $CACHE_REF" "$RUNNER_TEMP/$prefix-$image.log" \
+                || fail "$prefix: $image build did not import the cache"
+            done
+            grep -Fq 'exporting cache to registry' "$RUNNER_TEMP/$prefix-app.log" || fail "$prefix: first image did not export the cache"
+            ! grep -Fq 'exporting cache to registry' "$RUNNER_TEMP/$prefix-worker.log" || fail "$prefix: second image exported the cache"
+          done
+
+  assert-failures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HEAD_REF: ${{ github.head_ref }}
+      WORKFLOW: test-docker-release-failures.yaml
+    steps:
+      - name: Dispatch the failure cases and read their logs
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run "$WORKFLOW" --ref "$HEAD_REF"
+
+          run_id=
+          for _ in $(seq 1 20); do
+            run_id=$(gh run list --workflow "$WORKFLOW" --event workflow_dispatch --branch "$HEAD_REF" \
+              --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$start\")] | first | .databaseId // empty")
+            [ -n "$run_id" ] && break
+            sleep 6
+          done
+          [ -n "$run_id" ] || fail "dispatched run not found"
+
+          timeout 600 gh run watch "$run_id" >/dev/null || true
+          [ "$(gh run view "$run_id" --json status --jq .status)" = completed ] || fail "run $run_id did not complete"
+
+          check_case() {
+            local prefix="$1" expected="$2" job_id
+            job_id=$(gh api "repos/$GH_REPO/actions/runs/$run_id/jobs?per_page=100" --paginate \
+              --jq ".jobs[] | select(.name | startswith(\"$prefix\")) | select(.conclusion == \"failure\") | .id")
+            [ -n "$job_id" ] || fail "$prefix: job did not fail"
+            timeout 60 gh api "repos/$GH_REPO/actions/jobs/$job_id/logs" > "$RUNNER_TEMP/$prefix.log"
+            grep -Fq "$expected" "$RUNNER_TEMP/$prefix.log" || fail "$prefix: log does not contain: $expected"
+          }
+          check_case bad-semver 'Tag 1.2.3 is not a valid release tag'
+          check_case not-a-tag 'is not a tag, run this workflow from a published release'
