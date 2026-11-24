@@ -1,9 +1,6 @@
 services:
   app:
     image: ${REGISTRY:-localhost:5000}/fixture-app:${TAG:?TAG is required}
-    ports:
-      - target: 8080
-        published: ${FIXTURE_PORT:-18080}
     configs:
       - source: app_config
         target: /www/config

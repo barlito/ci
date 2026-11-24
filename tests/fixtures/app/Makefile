@@ -8,7 +8,7 @@ export REGISTRY CONFIG_VERSION TRACE_FILE
 TRACE = ./trace.sh $@
 REQUIRE_TAG = $(if $(TAG),,$(error TAG is required))
 
-.PHONY: deploy.prod deploy.update rollback deploy.recover deploy.ci docker.undeploy.ci fixture.down
+.PHONY: deploy.prod deploy.update rollback deploy.recover deploy.ci docker.undeploy.ci fixture.http fixture.down
 
 deploy.prod:
 	$(REQUIRE_TAG)
@@ -34,6 +34,10 @@ deploy.ci:
 
 docker.undeploy.ci:
 	$(TRACE)
+
+fixture.http:
+	@timeout 10 docker exec "$$(docker ps -q --filter label=com.docker.swarm.service.name=$(STACK)_app | head -n1)" \
+		wget -qO- http://127.0.0.1:8080/$(URL_PATH)
 
 fixture.down:
 	docker stack rm --detach=false $(STACK)

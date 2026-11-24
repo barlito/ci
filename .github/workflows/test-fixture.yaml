@@ -57,18 +57,18 @@ jobs:
       - name: Full deploy
         run: |
           make deploy.prod TAG=v1.0.0
-          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors http://localhost:18080/health | grep -Fx 'ok v1.0.0'
-          curl -fsS http://localhost:18080/config | grep -Fx 'fixture-config v1'
+          make -s fixture.http URL_PATH=health | grep -Fx 'ok v1.0.0'
+          make -s fixture.http URL_PATH=config | grep -Fx 'fixture-config v1'
 
       - name: Rolling update
         run: |
           make deploy.update TAG=v1.1.0
-          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors http://localhost:18080/health | grep -Fx 'ok v1.1.0'
+          make -s fixture.http URL_PATH=health | grep -Fx 'ok v1.1.0'
 
       - name: Rollback
         run: |
           make rollback TAG=v1.0.0 RESTORE=1
-          curl -fsS --retry 10 --retry-delay 2 --retry-all-errors http://localhost:18080/health | grep -Fx 'ok v1.0.0'
+          make -s fixture.http URL_PATH=health | grep -Fx 'ok v1.0.0'
 
       - name: Forced failure and trace
         env:
