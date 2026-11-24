@@ -4,21 +4,27 @@ on:
   workflow_call:
     inputs:
       dockerfile:
+        description: Path of the Dockerfile, relative to the repository root
         type: string
         default: Dockerfile
       target:
+        description: Build target (empty builds the last stage)
         type: string
         default: ""
       context:
+        description: Build context
         type: string
         default: .
       severity:
+        description: Comma-separated Trivy severities to report
         type: string
         default: CRITICAL,HIGH
       ignore-unfixed:
+        description: Ignore vulnerabilities without a fix
         type: boolean
         default: true
       fail-on-findings:
+        description: Fail the job when findings are reported
         type: boolean
         default: false
 
@@ -53,24 +59,56 @@ jobs:
           if [ -n "$TARGET" ]; then args+=(--target "$TARGET"); fi
           docker build "${args[@]}" "$CONTEXT"
 
+      - name: Restore Trivy cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
+
       - name: Scan with Trivy
         run: |
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
           args=(--scanners vuln --severity "$SEVERITY" --format sarif --output /out/trivy.sarif)
           if [ "$IGNORE_UNFIXED" = "true" ]; then args+=(--ignore-unfixed); fi
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD:/out" \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
             "$TRIVY_IMAGE" image "${args[@]}" local/scan:latest
+          sudo chmod -R a+rX "$RUNNER_TEMP/trivy-cache"
 
-      - name: Count findings
+      - name: Summarize findings
         id: findings
-        run: echo "count=$(jq '[.runs[].results[]?] | length' trivy.sarif)" >> "$GITHUB_OUTPUT"
+        run: |
+          count=$(jq '[.runs[].results[]?] | length' trivy.sarif)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Trivy: $DOCKERFILE ${TARGET:+(target $TARGET)}"
+            echo
+            echo "$count finding(s) at severity $SEVERITY"
+            if [ "$count" -gt 0 ]; then
+              echo
+              echo "| Vulnerability | Package | Severity | Fixed version |"
+              echo "|---|---|---|---|"
+              jq -r '.runs[].results[]? | .ruleId as $id | .message.text as $t
+                | "| \($id) | \(try ($t | capture("Package: (?<v>[^\n]*)").v) catch "") | \(try ($t | capture("Severity: (?<v>[^\n]*)").v) catch "") | \(try ($t | capture("Fixed Version: (?<v>[^\n]*)").v) catch "") |"' trivy.sarif
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Compute SARIF category
+        id: category
+        run: |
+          category="trivy-$DOCKERFILE-$CONTEXT${TARGET:+-$TARGET}"
+          echo "value=$category" >> "$GITHUB_OUTPUT"
+
+      # Code scanning needs GitHub Advanced Security on private repositories.
       - name: Upload SARIF
+        if: ${{ !github.event.repository.private }}
         uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           sarif_file: trivy.sarif
-          category: trivy-${{ inputs.dockerfile }}-${{ inputs.target }}
+          category: ${{ steps.category.outputs.value }}
 
       - name: Fail on findings
         if: inputs.fail-on-findings

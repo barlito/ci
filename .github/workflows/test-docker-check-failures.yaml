@@ -28,3 +28,4 @@ jobs:
     uses: ./.github/workflows/docker-check.yaml # zizmor: ignore[self-repository]
     with:
       compose-files: tests/fixtures/app/docker-compose-prod.yml
+      compose-env: TAG=v0.0.0

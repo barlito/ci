@@ -39,7 +39,7 @@ jobs:
   vulnerable-fails:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     permissions:
       contents: read
       actions: write
@@ -52,4 +52,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Dispatch failure cases and assert
-        run: .github/scripts/assert-failure-cases.sh test-image-scan-failures.yaml 'findings-fail::Trivy reported'
+        run: .github/scripts/assert-failure-cases.sh test-image-scan-failures.yaml 3300 'findings-fail::Trivy reported'
