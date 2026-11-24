@@ -51,13 +51,14 @@ Set on the `production` environment of the consumer repository (repository level
 
 | Kind | Name | Used by |
 |---|---|---|
-| variable | `SERVER_USERNAME`, `SERVER_HOST`, `SERVER_PORT` | deploy, rollback |
-| variable | `SERVER_HOST_KEY` (a `known_hosts` line of the server ed25519 key) | deploy, rollback |
+| variable | `SERVER_HOST` | deploy, rollback |
+| secret | `SERVER_USERNAME`, `SERVER_PORT` | deploy, rollback |
+| secret | `SERVER_HOST_KEY` (a `known_hosts` line of the server ed25519 key) | deploy, rollback |
 | secret | `SSH_PRIVATE_KEY` | deploy, rollback |
 | secret | `DOCKER_HUB_USERNAME`, `DOCKER_HUB_READ_ONLY_ACCESS_TOKEN` | deploy, rollback |
 | secret | `DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN` | release only |
 
-No server information is stored in this repository.
+No server information is stored in this repository. Variables are printed in clear in the logs of public repositories, hence the server user, port and host key being secrets.
 
 ### Deploy caller
 
