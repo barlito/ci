@@ -14,14 +14,16 @@ jobs:
 
 `v1` is a floating major tag moved by `promote.yaml` to every non-prerelease `v1.x.y` release. Pin an exact version (`@v1.2.3`) only temporarily.
 
-| Workflow | Caller trigger | Status |
+| Workflow | Caller trigger | Caller permissions |
 |---|---|---|
-| `docker-release.yaml` | `release: [published]` | planned |
-| `swarm-deploy.yaml` | `workflow_dispatch`, run with `--ref vX.Y.Z` | planned |
-| `swarm-rollback.yaml` | `workflow_dispatch` on the default branch | planned |
-| `image-scan.yaml` | any | planned |
-| `docker-check.yaml` | `pull_request` | planned |
-| `php-ci.yaml` | `pull_request`, `push` | planned |
+| `docker-release.yaml` | `release: [published]` | `contents: read`, `packages: write` |
+| `swarm-deploy.yaml` | `workflow_dispatch`, run with `--ref vX.Y.Z` | `contents: read`, `deployments: write` |
+| `swarm-rollback.yaml` | `workflow_dispatch` on the default branch | `contents: read`, `deployments: write` |
+| `image-scan.yaml` | any | `contents: read`, `security-events: write` |
+| `docker-check.yaml` | `pull_request` | `contents: read` |
+| `php-ci.yaml` | `pull_request`, `push` | `contents: read` |
+
+A caller must grant at least the permissions of the workflow it calls, even when a step ends up skipped (the SARIF upload of `image-scan` on a private repository, for example).
 
 ## Consumer contract
 
@@ -29,7 +31,7 @@ Prerequisites:
 
 - GitHub releases tagged `vX.Y.Z[-suffix]` on the default branch.
 - A `Dockerfile` with named targets.
-- A `docker-compose-prod.yml` that uses `${TAG}` for images and `<name>_${CONFIG_VERSION}` for Swarm configs.
+- A `docker-compose-prod.yml` that uses `${TAG}` for images and `<name>_${CONFIG_VERSION}` for Swarm configs. `CONFIG_VERSION` is computed and exported by the consumer `Makefile` (a hash of the config files, for example).
 
 ### Make targets
 
@@ -45,6 +47,8 @@ Environment guaranteed to make: `DOCKER_HOST=ssh://...`, `TAG`, and the secrets 
 
 `deploy.update` does not reapply environment variables nor networks: use a `full` deploy when they change.
 
+PHP projects using the production rules of `php-make-rules` need castor: set `castor: true` on `swarm-deploy` and `swarm-rollback`.
+
 ### Variables and secrets
 
 Set on the `production` environment of the consumer repository (repository level as a fallback):
@@ -55,12 +59,69 @@ Set on the `production` environment of the consumer repository (repository level
 | secret | `SERVER_USERNAME`, `SERVER_PORT` | deploy, rollback |
 | secret | `SERVER_HOST_KEY` (a `known_hosts` line of the server ed25519 key) | deploy, rollback |
 | secret | `SSH_PRIVATE_KEY` | deploy, rollback |
-| secret | `DOCKER_HUB_USERNAME`, `DOCKER_HUB_READ_ONLY_ACCESS_TOKEN` | deploy, rollback |
-| secret | `DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN` | release only |
+| secret | `DOCKER_HUB_USERNAME`, `DOCKER_HUB_READ_ONLY_ACCESS_TOKEN` | deploy, rollback, php-ci |
+
+The release job has no environment: set `DOCKER_HUB_USERNAME` and `DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN` at repository level for `docker-release`.
 
 No server information is stored in this repository. Variables are printed in clear in the logs of public repositories, hence the server user, port and host key being secrets.
 
-### Deploy caller
+## Workflows
+
+All of them take `secrets: inherit`; only the secrets named above are read.
+
+### docker-release
+
+Builds and pushes one image per target, tagged with the release tag. `latest` moves only for the highest stable tag of the repository.
+
+| Input | Default | |
+|---|---|---|
+| `images` | required | JSON array of `{"name","target"}`, the first image is the main one |
+| `context` | `.` | Build context |
+| `dockerfile` | `Dockerfile` | Path relative to the repository root |
+| `namespace` | `barlito` | Prepended to image names without a slash |
+| `registry` | `docker.io` | |
+| `cache` | `ghcr` | `ghcr`, `gha` or `none` |
+| `platforms` | `linux/amd64` | |
+| `build-args` | | Multiline `KEY=VALUE`, `APP_VERSION` is always added |
+| `sbom`, `provenance` | `true` | |
+
+Outputs: `tag`, and `digests` (JSON object mapping each target to its digest).
+
+```yaml
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release:
+    uses: barlito/ci/.github/workflows/docker-release.yaml@v1
+    with:
+      images: '[{"name":"my-app","target":"app"},{"name":"my-app-worker","target":"worker"}]'
+    secrets: inherit
+```
+
+### swarm-deploy
+
+Validates the tag and the images, opens an SSH connection to the server and runs `make deploy.update` (or `make deploy.prod` with `full: true`), then `make deploy.recover` on failure.
+
+| Input | Default | |
+|---|---|---|
+| `full` | `false` | Run `deploy.prod` instead of `deploy.update` |
+| `environment` | `production` | GitHub environment of the job |
+| `images` | | Space-separated image references without tag, each `<ref>:<TAG>` must exist |
+| `env-secrets` | | Space-separated secret names exported to make |
+| `castor` | `false` | Install castor before running make |
+| `submodules` | `true` | |
+| `working-directory` | `.` | Directory where make runs |
+| `target` | | Overrides the make target |
+| `require-tag` | `true` | `false` only accepted without images |
+| `timeout-minutes` | `20` | |
 
 ```yaml
 name: deploy
@@ -83,12 +144,84 @@ jobs:
       full: ${{ inputs.re-deploy }}
       images: barlito/my-app barlito/my-app-worker
       env-secrets: DB_PASSWORD APP_SECRET
+      castor: true
     secrets: inherit
 ```
 
 The deploy job declares the `environment`, so GitHub records a Deployment (tag, commit, run, status) for each run. Only the secrets listed in `env-secrets` are exported to make.
 
 Stacks without a build (`traefik-base`...) use `swarm-deploy` with `images: ""`, `require-tag: false` and a dedicated `target`, plus `docker-check`.
+
+### swarm-rollback
+
+Runs `make rollback TAG=<tag> [RESTORE=<restore>]`, only from the default branch. It shares its concurrency group with `swarm-deploy`.
+
+Inputs: `tag` (required), `restore`, and the same `environment`, `images`, `env-secrets`, `castor`, `submodules`, `working-directory`, `target` and `timeout-minutes` as `swarm-deploy`.
+
+```yaml
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
+      restore-database:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  rollback:
+    uses: barlito/ci/.github/workflows/swarm-rollback.yaml@v1
+    with:
+      tag: ${{ inputs.tag }}
+      restore: ${{ inputs.restore-database && '1' || '' }}
+      images: barlito/my-app barlito/my-app-worker
+      env-secrets: DB_PASSWORD APP_SECRET
+      castor: true
+    secrets: inherit
+```
+
+### image-scan
+
+Builds an image and scans it with Trivy. Findings go to code scanning (SARIF) on public repositories and to the job summary on private ones.
+
+| Input | Default | |
+|---|---|---|
+| `dockerfile` | `Dockerfile` | Path relative to the repository root |
+| `target` | | Build target, empty builds the last stage |
+| `context` | `.` | |
+| `severity` | `CRITICAL,HIGH` | |
+| `ignore-unfixed` | `true` | |
+| `fail-on-findings` | `false` | |
+
+### docker-check
+
+Builds the given targets without pushing and validates the compose files.
+
+| Input | Default | |
+|---|---|---|
+| `dockerfile` | `Dockerfile` | Path relative to the repository root |
+| `targets` | | Space-separated build targets, empty skips the build |
+| `context` | `.` | |
+| `compose-files` | `docker-compose-prod.yml` | Space-separated |
+| `compose-env` | | Multiline `KEY=VALUE` dummy values for interpolation |
+
+### php-ci
+
+Starts the CI stack (`make deploy.ci`), runs every check then every test target, reports all failures, and always runs `make docker.undeploy.ci`.
+
+| Input | Default | |
+|---|---|---|
+| `checks` | `cs_fixer.dry_run phpcs phpstan` | Space-separated make targets |
+| `tests` | `phpunit` | Space-separated make targets |
+| `castor` | `true` | |
+| `cache-paths` | | Extra paths to cache, one per line |
 
 ## Development
 
