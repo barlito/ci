@@ -10,7 +10,6 @@ permissions: {}
 
 jobs:
   broken-compose:
-    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
     uses: ./.github/workflows/docker-check.yaml # zizmor: ignore[self-repository]
@@ -18,7 +17,6 @@ jobs:
       compose-files: tests/fixtures/docker-check/broken-compose/docker-compose-prod.yml
 
   broken-dockerfile:
-    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
     uses: ./.github/workflows/docker-check.yaml # zizmor: ignore[self-repository]
@@ -29,7 +27,6 @@ jobs:
       compose-files: tests/fixtures/docker-check/no-build-compose.yml
 
   missing-env:
-    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
     uses: ./.github/workflows/docker-check.yaml # zizmor: ignore[self-repository]
