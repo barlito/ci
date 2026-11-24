@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - tests/fixtures/php-ci/**
-      - .github/scripts/assert-php-ci-failures.sh
+      - .github/scripts/assert-failure-cases.sh
       - .github/workflows/php-ci.yaml
       - .github/workflows/test-php-ci.yaml
       - .github/workflows/test-php-ci-failures.yaml
@@ -40,6 +40,14 @@ jobs:
       - name: Dispatch the failure cases and assert their outcome
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          GH_REPO: ${{ github.repository }}
           BRANCH: ${{ github.head_ref }}
-        run: bash .github/scripts/assert-php-ci-failures.sh
+        run: |
+          .github/scripts/assert-failure-cases.sh test-php-ci-failures.yaml 900 \
+            'failing-check::Failed checks: check.fail' \
+            'failing-check::FIXTURE check.ok executed' \
+            'failing-check::FIXTURE test.ok executed' \
+            'failing-check::FIXTURE docker.undeploy.ci executed' \
+            'failing-test::Failed tests: test.fail' \
+            'failing-test::FIXTURE test.ok executed' \
+            'failing-test::FIXTURE docker.undeploy.ci executed'

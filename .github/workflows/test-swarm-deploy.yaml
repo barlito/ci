@@ -7,6 +7,7 @@ on:
       - .github/workflows/swarm-rollback.yaml
       - .github/workflows/test-swarm-deploy.yaml
       - .github/workflows/test-swarm-deploy-failures.yaml
+      - .github/scripts/assert-failure-cases.sh
       - tests/fixtures/swarm-deploy/**
       - tests/fixtures/app/**
 
@@ -160,62 +161,30 @@ jobs:
     timeout-minutes: 40
     permissions:
       actions: write
+      contents: read
     env:
       GH_TOKEN: ${{ github.token }}
-      REPO: ${{ github.repository }}
-      HEAD_REF: ${{ github.head_ref }}
-      CORRELATION: ${{ github.run_id }}-${{ github.run_attempt }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ github.head_ref }}
     steps:
-      - name: Dispatch the expected-failure cases
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dispatch the expected-failure cases and assert their outcome
         run: |
-          set -euo pipefail
-          gh workflow run test-swarm-deploy-failures.yaml --repo "$REPO" --ref "$HEAD_REF" -f correlation="$CORRELATION"
-
-      - name: Wait for the cases
-        run: |
-          set -euo pipefail
-          run_id=
-          for _ in $(seq 1 30); do
-            run_id=$(gh run list --repo "$REPO" --workflow test-swarm-deploy-failures.yaml --event workflow_dispatch --limit 20 \
-              --json databaseId,displayTitle --jq ".[] | select(.displayTitle | endswith(\"$CORRELATION\")) | .databaseId" | head -n1)
-            [ -z "$run_id" ] || break
-            sleep 10
-          done
-          [ -n "$run_id" ] || { echo "::error::dispatched run not found"; exit 1; }
-          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
-          timeout 1500 sh -c "until [ \"\$(gh run view $run_id --repo $REPO --json status --jq .status)\" = completed ]; do sleep 20; done" \
-            || { echo "::error::cases did not finish in time"; exit 1; }
-
-      - name: Assert every case failed for the expected reason
-        run: |
-          set -euo pipefail
-          jobs=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate)
-          status=0
-          check() {
-            local case=$1 pattern=$2
-            local row id conclusion
-            row=$(jq -r --arg c "$case" '.jobs[] | select(.name | startswith($c + " /")) | "\(.id) \(.conclusion)"' <<<"$jobs" | head -n1)
-            [ -n "$row" ] || { echo "::error::$case: job not found in run $RUN_ID"; status=1; return; }
-            id=${row%% *}; conclusion=${row##* }
-            if [ "$conclusion" != failure ]; then echo "::error::$case concluded '$conclusion', expected failure"; status=1; return; fi
-            if ! gh api --allow-escape-sequences "repos/$REPO/actions/jobs/$id/logs" | grep -Eq -- "$pattern"; then
-              echo "::error::$case log lacks: $pattern"; status=1; return
-            fi
-            echo "ok: $case"
-          }
-          check not-a-tag 'This workflow must run on a tag'
-          check invalid-tag "Invalid tag 'v1\.1'"
-          check no-tag-with-images 'require-tag: false is only allowed when images is empty'
-          check missing-secret "Secret 'DOES_NOT_EXIST' listed in env-secrets does not exist"
-          check missing-image 'Image localhost:5000/does-not-exist:v1\.1\.0 not found'
-          check wrong-host-key 'SSH connection to the server failed'
-          check unknown-rollback-tag 'Tag v9\.9\.9 does not exist in the repository'
-          check rollback-not-default-branch 'Rollback must run on the default branch'
-          check reserved-secret-name "Secret name 'MAKEFLAGS' is reserved"
-          check lowercase-secret-name "Invalid secret name 'github_token'"
-          check target-failure-no-recover 'make e2e\.fail failed'
-          check target-failure-no-recover 'deploy\.recover is not defined, skipping recovery'
-          check target-failure 'make e2e\.fail failed'
-          check target-failure 'deploy\.recover exported= castor=no'
-          check target-failure 'E2E-EVIDENCE-END'
-          exit "$status"
+          .github/scripts/assert-failure-cases.sh test-swarm-deploy-failures.yaml 1500 \
+            'not-a-tag::This workflow must run on a tag' \
+            "invalid-tag::Invalid tag 'v1.1'" \
+            'no-tag-with-images::require-tag: false is only allowed when images is empty' \
+            "missing-secret::Secret 'DOES_NOT_EXIST' listed in env-secrets does not exist" \
+            'missing-image::Image localhost:5000/does-not-exist:v1.1.0 not found' \
+            'wrong-host-key::SSH connection to the server failed' \
+            'unknown-rollback-tag::Tag v9.9.9 does not exist in the repository' \
+            'rollback-not-default-branch::Rollback must run on the default branch' \
+            "reserved-secret-name::Secret name 'MAKEFLAGS' is reserved" \
+            "lowercase-secret-name::Invalid secret name 'github_token'" \
+            'target-failure-no-recover::make e2e.fail failed' \
+            'target-failure-no-recover::deploy.recover is not defined, skipping recovery' \
+            'target-failure::make e2e.fail failed' \
+            'target-failure::deploy.recover exported= castor=no' \
+            'target-failure::E2E-EVIDENCE-END'

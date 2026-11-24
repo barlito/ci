@@ -1,13 +1,7 @@
 name: test-swarm-deploy-failures
-run-name: test-swarm-deploy-failures ${{ inputs.correlation }}
 
 on:
   workflow_dispatch:
-    inputs:
-      correlation:
-        description: Identifies the dispatching run
-        required: true
-        type: string
 
 permissions: {}
 
