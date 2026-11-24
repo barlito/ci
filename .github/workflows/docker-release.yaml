@@ -1,0 +1,217 @@
+name: docker-release
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: 'JSON array of {"name","target"}; the first image is the main one'
+        type: string
+        required: true
+      context:
+        type: string
+        default: .
+      dockerfile:
+        description: Path relative to the repository root
+        type: string
+        default: Dockerfile
+      namespace:
+        description: Registry namespace, used only for image names without a slash
+        type: string
+        default: barlito
+      registry:
+        type: string
+        default: docker.io
+      cache:
+        description: ghcr, gha or none
+        type: string
+        default: ghcr
+      platforms:
+        type: string
+        default: linux/amd64
+      build-args:
+        description: Multiline KEY=VALUE; APP_VERSION is always added
+        type: string
+        default: ''
+      sbom:
+        type: boolean
+        default: true
+      provenance:
+        type: boolean
+        default: true
+      e2e-tag:
+        description: Reserved for tests. Replaces the ref name and skips the tag-ref check
+        type: string
+        default: ''
+      e2e-extra-tags:
+        description: Reserved for tests. Space-separated tags added to the repository tags when deciding whether latest moves
+        type: string
+        default: ''
+    secrets:
+      DOCKER_HUB_USERNAME:
+        required: false
+      DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN:
+        required: false
+    outputs:
+      tag:
+        description: Released tag, e.g. v1.2.3
+        value: ${{ jobs.release.outputs.tag }}
+      digests:
+        description: JSON object mapping each image target to its digest
+        value: ${{ jobs.release.outputs.digests }}
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: docker-release-${{ github.repository }}${{ inputs.e2e-tag && format('-{0}', inputs.e2e-tag) || '' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY_LOGIN: ${{ secrets.DOCKER_HUB_USERNAME != '' || secrets.DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN != '' }}
+    outputs:
+      tag: ${{ steps.guard.outputs.tag }}
+      digests: ${{ steps.build.outputs.digests }}
+    steps:
+      - name: Guard tag and inputs
+        id: guard
+        env:
+          E2E_TAG: ${{ inputs.e2e-tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          IMAGES: ${{ inputs.images }}
+          CACHE: ${{ inputs.cache }}
+          E2E_EXTRA_TAGS: ${{ inputs.e2e-extra-tags }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -n "$E2E_TAG" ]; then
+            tag="$E2E_TAG"
+          elif [ "$REF_TYPE" = tag ]; then
+            tag="$REF_NAME"
+          else
+            echo "::error::Ref $REF_NAME is not a tag, run this workflow from a published release"
+            exit 1
+          fi
+          semver='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$tag" =~ $semver ]]; then
+            echo "::error::Tag $tag is not a valid release tag, expected vX.Y.Z or vX.Y.Z-suffix"
+            exit 1
+          fi
+          case "$CACHE" in
+            ghcr | gha | none) ;;
+            *) echo "::error::Input cache must be ghcr, gha or none, got $CACHE"; exit 1 ;;
+          esac
+          if ! jq -e 'type == "array" and length > 0 and all(.[]; (.name | type == "string") and (.target | type == "string"))' <<<"$IMAGES" >/dev/null; then
+            echo '::error::Input images must be a non-empty JSON array of {"name","target"}'
+            exit 1
+          fi
+          if ! jq -e '([.[].target] | unique | length) == length' <<<"$IMAGES" >/dev/null; then
+            echo '::error::Input images must have unique targets, the digests output is keyed by target'
+            exit 1
+          fi
+          latest=false
+          if [[ "$tag" != *-* ]] && [ "$RELEASE_PRERELEASE" != true ]; then
+            stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
+            repo_tags=$(gh api --method GET "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
+            highest=$(printf '%s\n%s\n' "$repo_tags" "$tag $E2E_EXTRA_TAGS" | tr ' ' '\n' | grep -E "$stable" | sort -V | tail -n 1)
+            if [ "$highest" = "$tag" ]; then
+              latest=true
+            else
+              echo "::notice::Tag $tag is not the highest stable tag ($highest), latest is not moved"
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: inputs.platforms != 'linux/amd64'
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+        if: inputs.cache == 'gha'
+
+      - name: Login to ghcr.io for the build cache
+        if: inputs.cache == 'ghcr'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Login to the image registry
+        if: env.REGISTRY_LOGIN == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_READ_WRITE_DELETE_ACCESS_TOKEN }}
+
+      - name: Build and push
+        id: build
+        env:
+          IMAGES: ${{ inputs.images }}
+          CONTEXT: ${{ inputs.context }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          NAMESPACE: ${{ inputs.namespace }}
+          REGISTRY: ${{ inputs.registry }}
+          CACHE: ${{ inputs.cache }}
+          PLATFORMS: ${{ inputs.platforms }}
+          BUILD_ARGS: ${{ inputs.build-args }}
+          SBOM: ${{ inputs.sbom }}
+          PROVENANCE: ${{ inputs.provenance }}
+          TAG: ${{ steps.guard.outputs.tag }}
+          LATEST: ${{ steps.guard.outputs.latest }}
+        run: |
+          set -euo pipefail
+          cache_ref="ghcr.io/${GITHUB_REPOSITORY,,}:buildcache"
+          common=(--platform "$PLATFORMS" --file "$DOCKERFILE" --sbom="$SBOM" --provenance="$PROVENANCE"
+            --label "org.opencontainers.image.version=$TAG"
+            --label "org.opencontainers.image.revision=$GITHUB_SHA"
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY")
+          while IFS= read -r arg; do
+            if [ -n "$arg" ]; then common+=(--build-arg "$arg"); fi
+          done <<<"$BUILD_ARGS"
+          common+=(--build-arg "APP_VERSION=$TAG")
+
+          digests='{}'
+          index=0
+          while IFS=$'\t' read -r name target; do
+            case "$name" in
+              */*) ;;
+              *) name="$NAMESPACE/$name" ;;
+            esac
+            ref="$REGISTRY/$name"
+            tags=(--tag "$ref:$TAG")
+            if [ "$LATEST" = true ]; then tags+=(--tag "$ref:latest"); fi
+
+            cache_flags=()
+            case "$CACHE" in
+              ghcr)
+                cache_flags=(--cache-from "type=registry,ref=$cache_ref")
+                if [ "$index" -eq 0 ]; then cache_flags+=(--cache-to "type=registry,ref=$cache_ref,mode=max"); fi ;;
+              gha)
+                cache_flags=(--cache-from type=gha)
+                if [ "$index" -eq 0 ]; then cache_flags+=(--cache-to "type=gha,mode=max"); fi ;;
+            esac
+
+            echo "build-image[$target]"
+            metadata="$RUNNER_TEMP/metadata-$index.json"
+            docker buildx build --progress plain --push --target "$target" "${common[@]}" "${tags[@]}" "${cache_flags[@]}" \
+              --metadata-file "$metadata" "$CONTEXT"
+            digest=$(jq -er '."containerimage.digest"' "$metadata")
+            digests=$(jq -c --arg name "$target" --arg digest "$digest" '. + {($name): $digest}' <<<"$digests")
+            index=$((index + 1))
+          done < <(jq -r '.[] | [.name, .target] | @tsv' <<<"$IMAGES")
+
+          echo "digests=$digests" >> "$GITHUB_OUTPUT"

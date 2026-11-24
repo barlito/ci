@@ -1,12 +1,30 @@
 name: test-docker-release-failures
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  placeholder:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: echo "Registers the workflow on the default branch; cases live on the dispatched branch."
+  bad-semver:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-release.yaml  # zizmor: ignore[self-repository]
+    with:
+      images: '[{"name":"barlito/ci-test-app","target":"app"}]'
+      context: tests/fixtures/app
+      dockerfile: tests/fixtures/app/Dockerfile
+      registry: ghcr.io
+      e2e-tag: 1.2.3
+
+  not-a-tag:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-release.yaml  # zizmor: ignore[self-repository]
+    with:
+      images: '[{"name":"barlito/ci-test-app","target":"app"}]'
+      context: tests/fixtures/app
+      dockerfile: tests/fixtures/app/Dockerfile
+      registry: ghcr.io
